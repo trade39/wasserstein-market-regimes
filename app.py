@@ -76,14 +76,14 @@ st.markdown("""
 def get_ticker_and_fallback(asset_name):
     mapping = {
         "Gold": ("GC=F", "GLD"),
-        "Silver": ("SI=F", "SLV"), # Added for Pairs
+        "Silver": ("SI=F", "SLV"),
         "EURUSD": ("EURUSD=X", "FXE"),
-        "GBPUSD": ("GBPUSD=X", "FXB"), # Added for Pairs
+        "GBPUSD": ("GBPUSD=X", "FXB"),
         "ES (S&P 500)": ("ES=F", "SPY"),
         "NQ (Nasdaq)": ("NQ=F", "QQQ"),
-        "RTY (Russell 2000)": ("RTY=F", "IWM"), # Added for Pairs
+        "RTY (Russell 2000)": ("RTY=F", "IWM"),
         "BTC (Bitcoin)": ("BTC-USD", "BITO"),
-        "ETH (Ethereum)": ("ETH-USD", "ETHE") # Added for Pairs
+        "ETH (Ethereum)": ("ETH-USD", "ETHE")
     }
     return mapping.get(asset_name, ("SPY", "SPY"))
 
@@ -134,34 +134,54 @@ def fetch_vix(start_date, end_date):
         vix = yf.download("^VIX", start=start_date, end=end_date, progress=False, auto_adjust=False)
         if isinstance(vix.columns, pd.MultiIndex):
             vix.columns = vix.columns.get_level_values(0)
-        
-        # We only need the Close price (Fear Level)
         return vix['Close'].rename("VIX")
     except:
         return None
 
-def get_live_news_sentiment(ticker_symbol):
-    """Fetches live news and calculates sentiment using NLTK VADER."""
-    try:
-        t = yf.Ticker(ticker_symbol)
-        news = t.news
-        if not news:
-            return [], 0
+def get_live_news_sentiment(primary_ticker, fallback_ticker):
+    """
+    Robust news fetcher. 
+    If primary ticker (e.g. GC=F) returns empty/broken news, switches to fallback (e.g. GLD).
+    """
+    sia = SentimentIntensityAnalyzer()
+    
+    def fetch_valid_news(t):
+        try:
+            raw_news = yf.Ticker(t).news
+            # Filter for items that actually have a title
+            valid = [item for item in raw_news if item.get('title')]
+            return valid
+        except:
+            return []
+
+    # 1. Try Primary
+    news = fetch_valid_news(primary_ticker)
+    ticker_used = primary_ticker
+
+    # 2. If Primary failed (empty list), try Fallback
+    if not news:
+        news = fetch_valid_news(fallback_ticker)
+        ticker_used = fallback_ticker
+
+    scored_news = []
+    total_score = 0
+    
+    for item in news:
+        title = item.get('title', 'No Title')
+        score = sia.polarity_scores(title)['compound']
+        publisher = item.get('publisher', 'Unknown')
+        link = item.get('link', '#')
         
-        sia = SentimentIntensityAnalyzer()
-        scored_news = []
-        total_score = 0
+        scored_news.append({
+            'title': title, 
+            'score': score, 
+            'link': link, 
+            'publisher': publisher
+        })
+        total_score += score
         
-        for item in news:
-            title = item.get('title', '')
-            score = sia.polarity_scores(title)['compound']
-            scored_news.append({'title': title, 'score': score, 'link': item.get('link', '#'), 'publisher': item.get('publisher', 'Unknown')})
-            total_score += score
-            
-        avg_score = total_score / len(news) if news else 0
-        return scored_news, avg_score
-    except Exception as e:
-        return [], 0
+    avg_score = total_score / len(news) if news else 0
+    return scored_news, avg_score, ticker_used
 
 # --- Core Math Functions ---
 
@@ -178,20 +198,13 @@ def lift_data(log_returns, h1, h2):
     return np.array(segments), indices
 
 def calculate_wasserstein_distance_series(returns_a, returns_b, window_size):
-    """
-    Calculates rolling Wasserstein distance between two assets.
-    Idea 3: Pairs Trading via Optimal Transport.
-    """
-    # Align dates
     df = pd.DataFrame({'A': returns_a, 'B': returns_b}).dropna()
-    
     distances = []
     indices = []
     
     for i in range(window_size, len(df)):
         win_a = df['A'].iloc[i-window_size:i].values
         win_b = df['B'].iloc[i-window_size:i].values
-        # Wasserstein Distance (L1 between sorted distributions)
         d = wasserstein_distance(win_a, win_b)
         distances.append(d)
         indices.append(df.index[i])
@@ -278,43 +291,32 @@ def run_backtest(price_series, labels, time_indices):
 
 def add_technical_indicators(df, vix_data=None):
     df = df.copy()
-    
-    # Technicals
     df["RSI"] = RSIIndicator(close=df["Adj Close"], window=14).rsi()
     df["MACD"] = MACD(close=df["Adj Close"]).macd()
     bb = BollingerBands(close=df["Adj Close"], window=20, window_dev=2)
     df["BB_Width"] = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
     df["SMA_20"] = SMAIndicator(close=df["Adj Close"], window=20).sma_indicator()
     df["Dist_SMA_20"] = (df["Adj Close"] - df["SMA_20"]) / df["SMA_20"] 
-    
-    # Auto-Regression
     df["Lag_1"] = df["LogReturn"].shift(1)
     df["Lag_2"] = df["LogReturn"].shift(2)
-    
-    # Idea 2: Add VIX (Market Sentiment) to Feature Set
     if vix_data is not None:
         df = df.join(vix_data, how='left')
-        df['VIX'] = df['VIX'].fillna(method='ffill') # Fill holidays
+        df['VIX'] = df['VIX'].fillna(method='ffill') 
         df['VIX_Change'] = df['VIX'].pct_change()
-    
     return df.dropna()
 
 def run_ml_forecasting(df, feature_cols, target_col="Target", test_size=0.2):
     data = df.copy()
     data["Target"] = data["LogReturn"].shift(-1)
     data = data.dropna()
-    
     split_idx = int(len(data) * (1 - test_size))
     train = data.iloc[:split_idx]
     test = data.iloc[split_idx:]
-    
     model = RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42)
     model.fit(train[feature_cols], train[target_col])
-    
     pred_test = model.predict(test[feature_cols])
     mse = mean_squared_error(test[target_col], pred_test)
     acc = (np.sign(test[target_col]) == np.sign(pred_test)).mean()
-    
     return test.index, test[target_col], pred_test, mse, acc, model
 
 # --- Main App ---
@@ -343,48 +345,38 @@ step_size = st.sidebar.slider("Slide Step (h2)", 1, 20, 5)
 
 if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
     with st.spinner("Initializing Hybrid Model..."):
-        # Fetch Data
         df, ticker_used = fetch_data(primary_t, fallback_t, start_date, end_date)
-        
-        # Idea 2: Fetch VIX for Hybrid Forecasting
         vix_df = fetch_vix(start_date, end_date)
-        
-        # Idea 3: Fetch Pair Data
         df_pair, pair_ticker_used = fetch_data(pair_t, pair_fallback_t, start_date, end_date)
         
         if df is not None and len(df) > window_size:
-            # --- 1. Wasserstein Regimes ---
+            # 1. Regimes
             segments, time_indices = lift_data(df['LogReturn'], window_size, step_size)
             labels, centroids, anomaly_scores = wk_means_clustering(segments, k_clusters)
-            
             res = pd.DataFrame(index=time_indices)
             res['Regime'] = labels
             res['Anomaly_Score'] = anomaly_scores
-            
             main_df = df.join(res)
             main_df['Regime'] = main_df['Regime'].fillna(method='ffill')
             main_df['Anomaly_Score'] = main_df['Anomaly_Score'].fillna(method='ffill')
             main_df = main_df.dropna(subset=['Regime'])
             main_df['Regime'] = main_df['Regime'].astype(int)
 
-            # --- 2. Hybrid Forecasting (Regime + VIX) ---
+            # 2. Hybrid Forecast
             main_df = add_technical_indicators(main_df, vix_df)
             regime_dummies = pd.get_dummies(main_df['Regime'], prefix='Regime')
             main_df = pd.concat([main_df, regime_dummies], axis=1)
-            
             feature_cols = ["RSI", "MACD", "BB_Width", "Dist_SMA_20", "Lag_1", "Lag_2"]
-            if 'VIX' in main_df.columns: feature_cols += ['VIX', 'VIX_Change'] # Hybrid Feature
+            if 'VIX' in main_df.columns: feature_cols += ['VIX', 'VIX_Change']
             feature_cols += [c for c in main_df.columns if c.startswith("Regime_")]
-            
             test_dates, y_true, y_pred, mse, acc, model = run_ml_forecasting(main_df, feature_cols)
 
-            # --- 3. Live Sentiment (Idea 2) ---
-            news_items, news_score = get_live_news_sentiment(ticker_used)
+            # 3. Sentiment Fix
+            news_items, news_score, news_ticker_source = get_live_news_sentiment(ticker_used, fallback_t)
 
-            # --- 4. Pairs Trading (Idea 3) ---
+            # 4. Pairs
             dist_series = None
             if df_pair is not None:
-                # Synchronize data indices
                 common_idx = df.index.intersection(df_pair.index)
                 dist_series = calculate_wasserstein_distance_series(
                     df.loc[common_idx, 'LogReturn'], 
@@ -392,31 +384,17 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                     window_size
                 )
 
-            # --- Dashboard ---
+            # Dashboard
             last_regime = int(main_df['Regime'].iloc[-1])
-            regime_vol = np.std(segments[labels == last_regime].flatten()) * np.sqrt(252)
-            
-            # Header
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Current Regime", f"Regime {last_regime}", help="Classified by Wasserstein clustering")
-            c2.metric("Forecast Accuracy", f"{acc:.1%}", help="Out-of-sample directional accuracy")
-            c3.metric("Live Sentiment", f"{news_score:.2f}", delta="Bullish" if news_score > 0.05 else "Bearish" if news_score < -0.05 else "Neutral")
-            c4.metric("Pair Divergence", f"{dist_series.iloc[-1]:.4f}" if dist_series is not None else "N/A", help="Current Wasserstein Distance to Pair")
+            c1.metric("Current Regime", f"Regime {last_regime}")
+            c2.metric("Forecast Accuracy", f"{acc:.1%}")
+            c3.metric(f"Sentiment ({news_ticker_source})", f"{news_score:.2f}", delta="Bullish" if news_score > 0.05 else "Bearish" if news_score < -0.05 else "Neutral")
+            c4.metric("Pair Divergence", f"{dist_series.iloc[-1]:.4f}" if dist_series is not None else "N/A")
             
             st.markdown("---")
+            tabs = st.tabs(["📈 REGIMES", "🔮 FORECAST", "⚖️ PAIRS TRADER", "📰 LIVE SENTIMENT", "⚠️ RISK", "💰 STRATEGY", "⚖️ BENCHMARK"])
 
-            # TABS
-            tabs = st.tabs([
-                "📈 REGIMES", 
-                "🔮 AI FORECAST (Hybrid)", 
-                "⚖️ PAIRS TRADER",
-                "📰 LIVE SENTIMENT",
-                "⚠️ RISK & SHAPE", 
-                "💰 STRATEGY", 
-                "⚖️ BENCHMARK"
-            ])
-
-            # 1. Regimes
             with tabs[0]:
                 fig, ax = plt.subplots(figsize=(12, 5))
                 ax.plot(main_df.index, main_df['Adj Close'], color='#FFFFFF', alpha=0.15, lw=1)
@@ -424,91 +402,66 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                     subset = main_df[main_df['Regime'] == i]
                     ax.scatter(subset.index, subset['Adj Close'], color=SHARP_PALETTE[i], s=8, label=f'Regime {i}', zorder=5)
                 ax.legend(frameon=False)
-                ax.set_title(f"{asset_select} | Regime Identification")
                 st.pyplot(fig)
 
-            # 2. Forecast
             with tabs[1]:
                 c1, c2 = st.columns([3, 1])
                 with c1:
                     strat_ret = np.sign(y_pred) * y_true
                     cum_strat = (1 + strat_ret).cumprod()
                     cum_bh = (1 + y_true).cumprod()
-                    
                     fig_f, ax_f = plt.subplots(figsize=(10, 5))
                     ax_f.plot(test_dates, cum_bh, color='white', alpha=0.3, ls='--', label='Buy & Hold')
                     ax_f.plot(test_dates, cum_strat, color=SHARP_PALETTE[0], lw=2, label='Hybrid AI Strategy')
                     ax_f.legend(frameon=False)
-                    ax_f.set_title("Forecast Performance (Incorporating VIX + Regimes)")
                     st.pyplot(fig_f)
                 with c2:
-                    st.markdown("**Feature Importance**")
                     imps = pd.DataFrame({'Feature': feature_cols, 'Importance': model.feature_importances_}).sort_values('Importance', ascending=False)
                     fig_i, ax_i = plt.subplots(figsize=(4, 6))
                     sns.barplot(x='Importance', y='Feature', data=imps.head(10), ax=ax_i, palette="viridis")
                     st.pyplot(fig_i)
 
-            # 3. Pairs Trader (Idea 3)
             with tabs[2]:
                 if dist_series is not None:
-                    st.markdown(f"**Optimal Transport Arbitrage: {asset_select} vs {pair_select}**")
-                    st.caption("Plots the Wasserstein Distance between the return distributions of the two assets. Spikes indicate structural decoupling (Trade Opportunity).")
-                    
-                    # Normalize distance (Z-Score)
                     z_score = (dist_series - dist_series.mean()) / dist_series.std()
-                    
                     fig_p, ax_p = plt.subplots(figsize=(12, 5))
                     ax_p.plot(dist_series.index, z_score, color=SHARP_PALETTE[2], lw=1.5, label='Wasserstein Divergence (Z-Score)')
                     ax_p.axhline(2, color='red', ls='--', alpha=0.5, label='Sell Threshold (+2 Std)')
                     ax_p.axhline(-2, color='green', ls='--', alpha=0.5, label='Buy Threshold (-2 Std)')
-                    ax_p.set_title("Distributional Divergence Signal")
                     ax_p.legend(frameon=False)
                     st.pyplot(fig_p)
-                else:
-                    st.error("Could not fetch pair data.")
 
-            # 4. Live Sentiment (Idea 2)
             with tabs[3]:
-                st.markdown(f"**Latest News & Sentiment: {ticker_used}**")
-                st.caption("Powered by NLTK VADER (Valence Aware Dictionary and sEntiment Reasoner).")
-                
+                st.markdown(f"**Latest News: {news_ticker_source}**")
                 if news_items:
                     for item in news_items[:5]:
                         emoji = "🟢" if item['score'] > 0.05 else "🔴" if item['score'] < -0.05 else "⚪"
                         st.markdown(f"{emoji} **[{item['score']}]** [{item['title']}]({item['link']}) *({item['publisher']})*")
                 else:
-                    st.info("No recent news found via API.")
+                    st.info("No valid news found.")
 
-            # 5. Risk & Shape
             with tabs[4]:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown("**Risk Profile (Return vs Vol)**")
                     w_means = np.mean(segments, axis=1) * 252
                     w_vols = np.std(segments, axis=1) * np.sqrt(252)
                     fig_mv, ax_mv = plt.subplots(figsize=(6, 5))
                     for i in range(k_clusters):
                         m = labels == i
                         ax_mv.scatter(w_vols[m], w_means[m], color=SHARP_PALETTE[i], s=15, alpha=0.6, label=f'Regime {i}')
-                    ax_mv.legend(frameon=False)
                     st.pyplot(fig_mv)
                 with c2:
-                    st.markdown("**Wasserstein Anomaly Score**")
                     fig_ad, ax_ad = plt.subplots(figsize=(6, 5))
                     ax_ad.plot(main_df.index, main_df['Anomaly_Score'], color=SHARP_PALETTE[1], lw=1)
                     st.pyplot(fig_ad)
 
-            # 6. Strategy
             with tabs[5]:
                 backtest_df, safe_regime = run_backtest(main_df['Adj Close'], main_df['Regime'], main_df.index)
                 fig_bt, ax_bt = plt.subplots(figsize=(12, 5))
-                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=SHARP_PALETTE[3], lw=2, label='Regime Strategy')
-                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color='white', alpha=0.3, ls='--', label='Buy & Hold')
-                ax_bt.legend(frameon=False)
-                ax_bt.set_title(f"Long Regime {safe_regime} / Cash Regime {1 if safe_regime==0 else 0}")
+                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=SHARP_PALETTE[3], lw=2)
+                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color='white', alpha=0.3, ls='--')
                 st.pyplot(fig_bt)
 
-            # 7. Benchmark
             with tabs[6]:
                 blabels, bindices = moment_kmeans_clustering(df['LogReturn'], window_size, step_size, k_clusters)
                 bdf = pd.DataFrame({'Cluster': blabels}, index=bindices).join(df[['Adj Close']])
@@ -520,6 +473,6 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                 st.pyplot(fig_b)
 
         else:
-            st.warning("Insufficient data. Adjust window size.")
+            st.warning("Insufficient data.")
 else:
     st.info("Set parameters and click RUN FULL ANALYSIS.")
