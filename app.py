@@ -4,16 +4,22 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import wasserstein_distance
 
 # --- Configuration & Styles ---
 st.set_page_config(page_title="Wasserstein Market Regimes", layout="wide")
+
+# Apply Dark Background for Matplotlib globally
+plt.style.use('dark_background')
+
+# Custom CSS for Streamlit to ensure tables and text look good
 st.markdown("""
 <style>
     .reportview-container { margin-top: -2em; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display:none;}
+    /* Force dark background for plots if transparent */
+    div[data-testid="stImage"] {background-color: transparent;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -34,20 +40,17 @@ def get_ticker(asset_name):
 def fetch_data(ticker, start_date, end_date):
     """Fetch closing prices and calculate log returns with robust column handling."""
     try:
-        # Download data
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
         
         if data.empty:
             st.error(f"No data returned for {ticker}. The ticker might be delisted or the date range is invalid.")
             return None
         
-        # 1. Handle MultiIndex columns (common in new yfinance versions)
-        # If columns look like ('Adj Close', 'SPY'), flatten them to just 'Adj Close'
+        # Handle MultiIndex columns
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        # 2. Determine which column to use for price
-        # Prefer 'Adj Close', fallback to 'Close' if 'Adj Close' is missing
+        # Determine price column
         if 'Adj Close' in data.columns:
             price_col = 'Adj Close'
         elif 'Close' in data.columns:
@@ -56,15 +59,13 @@ def fetch_data(ticker, start_date, end_date):
             st.error(f"Could not find 'Adj Close' or 'Close' in data columns: {data.columns}")
             return None
             
-        # 3. Calculate Log Returns
-        # Use .copy() to avoid SettingWithCopy warnings
         data = data.copy()
         
-        # Create a standardized 'Adj Close' column for plotting if it doesn't exist
+        # Standardize column name for plotting
         if price_col != 'Adj Close':
             data['Adj Close'] = data[price_col]
 
-        # Log Returns: r_i = log(P_t) - log(P_{t-1})
+        # Log Returns
         data['LogReturn'] = np.log(data[price_col] / data[price_col].shift(1))
         
         data = data.dropna()
@@ -75,43 +76,25 @@ def fetch_data(ticker, start_date, end_date):
         return None
 
 def lift_data(log_returns, h1, h2):
-    """
-    Lifts the stream of returns into a stream of segments (empirical measures).
-    h1: Window size (number of atoms in the distribution)
-    h2: Step size (stride)
-    """
+    """Lifts the stream of returns into a stream of segments (empirical measures)."""
     n = len(log_returns)
     segments = []
     indices = []
     
-    # Sliding window
     for i in range(0, n - h1 + 1, h2):
         window = log_returns.iloc[i : i + h1].values
-        # We sort the window immediately because W_1 distance between 1D empirical 
-        # measures is simply the L1 distance between their sorted vectors (quantiles).
         segments.append(np.sort(window))
-        # Store the middle timestamp of the window for plotting
         indices.append(log_returns.index[i + h1 - 1])
         
     return np.array(segments), indices
 
 def wasserstein_barycenter_1d(segments):
-    """
-    Calculates the 1-Wasserstein Barycenter for a set of 1D empirical measures.
-    According to the paper (Prop 2.6), for p=1, this is the element-wise Median
-    of the sorted atom vectors.
-    """
-    # segments shape: (M, N) where M is num_segments in cluster, N is window_size
-    # Calculate column-wise median
+    """Calculates the 1-Wasserstein Barycenter (Component-wise Median)."""
     return np.median(segments, axis=0)
 
 def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
-    """
-    The Wasserstein K-Means Algorithm.
-    """
+    """The Wasserstein K-Means Algorithm."""
     n_segments, window_size = segments.shape
-    
-    # 1. Initialization: Randomly choose k segments as initial centroids
     rng = np.random.default_rng(42)
     initial_indices = rng.choice(n_segments, size=k, replace=False)
     centroids = segments[initial_indices]
@@ -120,48 +103,56 @@ def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
     labels = np.zeros(n_segments, dtype=int)
     
     for iteration in range(max_iter):
-        # 2. Assignment Step
-        # Calculate distance from every segment to every centroid
-        # Since segments and centroids are sorted 1D arrays, W_1 is mean(|u - v|)
         distances = np.zeros((n_segments, k))
         for j in range(k):
-            # Vectorized L1 distance between sorted vectors
-            # shape broadcast: (n_segments, window_size) - (window_size,)
             diff = np.abs(segments - centroids[j]) 
-            distances[:, j] = np.mean(diff, axis=1) # Average over atoms (1/N sum |a_i - b_i|)
+            distances[:, j] = np.mean(diff, axis=1)
             
-        # Assign to closest centroid
         labels = np.argmin(distances, axis=1)
         current_loss = np.sum(np.min(distances, axis=1))
         
-        # Check convergence
         if np.abs(prev_loss - current_loss) < tol:
             break
         prev_loss = current_loss
         
-        # 3. Update Step (Barycenter)
         new_centroids = []
         for j in range(k):
             cluster_members = segments[labels == j]
             if len(cluster_members) > 0:
-                # Update centroid to be the Wasserstein Barycenter of the cluster
-                new_centroid = wasserstein_barycenter_1d(cluster_members)
-                new_centroids.append(new_centroid)
+                new_centroids.append(wasserstein_barycenter_1d(cluster_members))
             else:
-                # Handle empty cluster by re-initializing (rare but possible)
                 new_centroids.append(segments[rng.choice(n_segments)])
         centroids = np.array(new_centroids)
         
     return labels, centroids
 
+def generate_context_summary(stats_df):
+    """Generates a text summary interpreting the regimes."""
+    summary = []
+    
+    # Identify Volatility Extremes
+    max_vol_regime = stats_df['Volatility (Ann.)'].idxmax()
+    min_vol_regime = stats_df['Volatility (Ann.)'].idxmin()
+    
+    # Identify Return Extremes
+    max_ret_regime = stats_df['Mean Return (Ann.)'].idxmax()
+    min_ret_regime = stats_df['Mean Return (Ann.)'].idxmin()
+
+    summary.append(f"**Regime {max_vol_regime} (High Volatility):** This regime exhibits the highest annualized volatility ({stats_df.loc[max_vol_regime, 'Volatility (Ann.)']:.2%}). "
+                   f"It often corresponds to 'Crisis' or 'Correction' periods (resembling Bear markets).")
+    
+    if max_vol_regime != min_vol_regime:
+        summary.append(f"**Regime {min_vol_regime} (Low Volatility):** This regime is more stable with lower volatility ({stats_df.loc[min_vol_regime, 'Volatility (Ann.)']:.2%}). "
+                       f"It typically represents 'Calm' or 'Bullish' trending periods.")
+        
+    return summary
+
 # --- Main App Interface ---
 
 st.title("Clustering Market Regimes using Wasserstein Distance")
 st.markdown("""
-This app applies the **Wasserstein k-means (WK-means)** algorithm to financial time series. 
-It treats sliding windows of returns as probability distributions and clusters them based on the 
-Earth Mover's Distance (1-Wasserstein), capturing shifts in market behavior (volatility, skewness, etc.) 
-without relying on rigid parametric assumptions.
+This app applies **Wasserstein k-means** to cluster market behavior. 
+It groups time periods not just by price, but by the **shape of the return distribution** (volatility, tails, skew).
 """)
 
 # Sidebar
@@ -175,105 +166,114 @@ end_date = col2.date_input("End Date", pd.to_datetime("today"))
 
 st.sidebar.subheader("WK-Means Hyperparameters")
 k_clusters = st.sidebar.slider("Number of Regimes (k)", 2, 5, 2)
-window_size = st.sidebar.slider("Window Size (h1)", 20, 100, 50, help="Number of days in each distribution segment.")
-step_size = st.sidebar.slider("Step Size (h2)", 1, 20, 5, help="How many days to slide the window forward.")
+window_size = st.sidebar.slider("Window Size (h1)", 20, 100, 50, help="Days in each distribution segment.")
+step_size = st.sidebar.slider("Step Size (h2)", 1, 20, 5, help="Days to slide forward.")
 
 # Execution
 if st.button("Run Clustering"):
     with st.spinner("Fetching data and calculating regimes..."):
-        # 1. Get Data
         df = fetch_data(ticker, start_date, end_date)
         
         if df is not None and len(df) > window_size:
-            # 2. Lift Data (Create Empirical Measures)
-            # segments shape: (Num_Windows, Window_Size) - these are sorted vectors
             segments_sorted, time_indices = lift_data(df['LogReturn'], window_size, step_size)
             
             if len(segments_sorted) < k_clusters:
-                st.error("Not enough data points for the chosen window size and step size.")
+                st.error("Not enough data points for the chosen parameters.")
             else:
-                # 3. Run Algorithm
                 labels, centroids = wk_means_clustering(segments_sorted, k_clusters)
                 
-                # 4. Process Results for Visualization
                 results_df = pd.DataFrame(index=time_indices)
                 results_df['Cluster'] = labels
-                # Align with original price data
-                # We map the cluster of the window ending at t to time t
                 merged_df = df.join(results_df)
-                
-                # Forward fill cluster labels for the "step size" gaps to make the plot continuous
                 merged_df['Cluster'] = merged_df['Cluster'].fillna(method='ffill')
-                # Drop initial NaN rows created by window lag
                 merged_df = merged_df.dropna(subset=['Cluster'])
                 merged_df['Cluster'] = merged_df['Cluster'].astype(int)
 
-                # --- Visualizations ---
-                
-                # A. Price Path Colored by Regime
-                st.subheader(f"{asset_select} Price Path by Regime")
-                
-                # Create segments for coloring
-                fig, ax = plt.subplots(figsize=(12, 6))
-                
-                # Plot underlying grey line for continuity
-                ax.plot(merged_df.index, merged_df['Adj Close'], color='lightgrey', alpha=0.5, label='Price')
-                
-                colors = plt.cm.viridis(np.linspace(0, 1, k_clusters))
-                
-                for cluster_id in range(k_clusters):
-                    # Filter data for this cluster
-                    cluster_data = merged_df[merged_df['Cluster'] == cluster_id]
-                    ax.scatter(cluster_data.index, cluster_data['Adj Close'], 
-                               color=colors[cluster_id], s=10, label=f'Regime {cluster_id}')
-                
-                ax.set_title("Identified Market Regimes")
-                ax.set_ylabel("Price")
-                ax.legend()
-                st.pyplot(fig)
-
-                # B. Centroid Distributions (The "Shape" of the Regime)
-                st.subheader("Regime Return Distributions (Centroids)")
-                st.markdown("These curves represent the 'typical' distribution of returns for each identified regime (the Wasserstein Barycenters).")
-                
-                fig2, ax2 = plt.subplots(figsize=(10, 6))
+                # --- Calculate Stats for Context ---
+                stats_data = []
                 for i in range(k_clusters):
-                    # Centroids are sorted vectors (Quantile Functions essentially). 
-                    # We can plot their KDE or Histogram to see the distribution shape.
-                    sns.kdeplot(centroids[i], ax=ax2, color=colors[i], label=f'Regime {i}', fill=True, alpha=0.3)
-                    
-                ax2.set_title("Probability Density of Cluster Centroids")
-                ax2.set_xlabel("Log Return")
-                ax2.legend()
-                st.pyplot(fig2)
-                
-                # C. Regime Statistics
-                st.subheader("Regime Statistics")
-                
-                stats = []
-                for i in range(k_clusters):
-                    # Get all actual returns belonging to this cluster
-                    # Note: We use the centroid for "Ideal" stats, or actual data for "Realized" stats.
-                    # Let's use the actual classified segments to compute realized volatility.
                     cluster_indices = np.where(labels == i)[0]
                     if len(cluster_indices) > 0:
-                        # flatten all windows in this cluster
                         all_returns = segments_sorted[cluster_indices].flatten()
-                        
-                        # Annualize (assuming daily data, 252 days)
                         vol = np.std(all_returns) * np.sqrt(252)
                         mu = np.mean(all_returns) * 252
-                        
-                        stats.append({
+                        stats_data.append({
                             "Regime": i,
-                            "Count (Windows)": len(cluster_indices),
-                            "Mean Return (Ann.)": f"{mu:.2%}",
-                            "Volatility (Ann.)": f"{vol:.2%}",
-                            "Min Return": f"{np.min(all_returns):.2%}",
-                            "Max Return": f"{np.max(all_returns):.2%}"
+                            "Count": len(cluster_indices),
+                            "Mean Return (Ann.)": mu,
+                            "Volatility (Ann.)": vol
                         })
+                stats_df_numeric = pd.DataFrame(stats_data).set_index("Regime")
+
+                # --- Visualizations (Dark Mode) ---
                 
-                st.table(pd.DataFrame(stats).set_index("Regime"))
+                # 1. Price Path
+                st.subheader(f"{asset_select} Price Path by Regime")
+                
+                # Setup Dark Figure
+                fig, ax = plt.subplots(figsize=(12, 6))
+                fig.patch.set_facecolor('#0E1117') # Streamlit Dark BG color approximation
+                ax.set_facecolor('#0E1117')
+                
+                # Plot Grey line
+                ax.plot(merged_df.index, merged_df['Adj Close'], color='#444444', alpha=0.5, label='Price', linewidth=1)
+                
+                # Plot Regimes
+                colors = plt.cm.plasma(np.linspace(0, 1, k_clusters)) # Plasma looks good on dark
+                
+                for cluster_id in range(k_clusters):
+                    cluster_data = merged_df[merged_df['Cluster'] == cluster_id]
+                    ax.scatter(cluster_data.index, cluster_data['Adj Close'], 
+                               color=colors[cluster_id], s=15, label=f'Regime {cluster_id}', zorder=10)
+                
+                ax.set_title("Identified Market Regimes", color='white', fontsize=14)
+                ax.set_ylabel("Price", color='white')
+                ax.tick_params(colors='white')
+                ax.grid(True, color='#333333', linestyle='--', alpha=0.5)
+                
+                # Legend with dark text
+                leg = ax.legend(facecolor='#0E1117', edgecolor='white')
+                for text in leg.get_texts():
+                    text.set_color("white")
+                
+                st.pyplot(fig)
+
+                # 2. Context Summary
+                st.subheader("Context Summary")
+                summary_text = generate_context_summary(stats_df_numeric)
+                for line in summary_text:
+                    st.info(line)
+
+                # 3. Distributions
+                st.subheader("Regime Return Distributions (Centroids)")
+                col_chart, col_stats = st.columns([2, 1])
+                
+                with col_chart:
+                    fig2, ax2 = plt.subplots(figsize=(8, 6))
+                    fig2.patch.set_facecolor('#0E1117')
+                    ax2.set_facecolor('#0E1117')
+                    
+                    for i in range(k_clusters):
+                        sns.kdeplot(centroids[i], ax=ax2, color=colors[i], label=f'Regime {i}', fill=True, alpha=0.2, linewidth=2)
+                        
+                    ax2.set_title("Distribution Shape (Barycenters)", color='white')
+                    ax2.set_xlabel("Log Return", color='white')
+                    ax2.tick_params(colors='white')
+                    ax2.grid(True, color='#333333', linestyle='--', alpha=0.5)
+                    leg2 = ax2.legend(facecolor='#0E1117', edgecolor='white')
+                    for text in leg2.get_texts():
+                        text.set_color("white")
+                        
+                    st.pyplot(fig2)
+
+                # 4. Stats Table (Formatted)
+                with col_stats:
+                    st.markdown("##### Detailed Statistics")
+                    # Format for display
+                    display_stats = stats_df_numeric.copy()
+                    display_stats['Mean Return (Ann.)'] = display_stats['Mean Return (Ann.)'].apply(lambda x: f"{x:.2%}")
+                    display_stats['Volatility (Ann.)'] = display_stats['Volatility (Ann.)'].apply(lambda x: f"{x:.2%}")
+                    st.dataframe(display_stats)
 
         else:
             st.warning("No data found or data length is shorter than window size.")
@@ -283,12 +283,12 @@ else:
 
 # --- Explainer ---
 st.markdown("---")
-st.markdown("### How it works (Based on PDF)")
+st.markdown("### Methodology")
 st.markdown("""
-1. [cite_start]**Lift**: The price series is converted into log-returns and sliced into overlapping windows (length $h_1$) [cite: 109-113].
-2. [cite_start]**Empirical Measure**: Each window is treated as a probability distribution [cite: 115-125].
-3. **Wasserstein Distance**: The algorithm calculates the distance between these distributions. [cite_start]For 1D data, this is the $L_1$ distance between sorted returns [cite: 271-273].
-4. **WK-Means**: 
-    - [cite_start]**Assignment**: Windows are assigned to the closest regime centroid[cite: 307].
-    - [cite_start]**Update**: Centroids are updated by calculating the **Wasserstein Barycenter** (which, for $p=1$, is the component-wise median of sorted distributions) [cite: 280-284].
+This tool uses the **Wasserstein Distance** (Earth Mover's Distance) to compare windows of returns. 
+[cite_start]Unlike standard correlation or mean-variance clustering, this method compares the **entire geometry** of the return distribution [cite: 7, 30-32].
+
+* **Regimes:** Clusters are formed by grouping time windows with similar return distributions.
+* [cite_start]**Barycenters:** The curves plotted above are the "average" distribution for that regime [cite: 32, 241-243].
+* [cite_start]**Context:** High volatility regimes often align with market crashes (fat tails), while low volatility regimes align with steady growth [cite: 377-382].
 """)
