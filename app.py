@@ -23,55 +23,48 @@ except LookupError:
 
 # --- Configuration & Styles ---
 st.set_page_config(
-    page_title="Wasserstein Quant Terminal", 
+    page_title="Wasserstein AI Trader", 
     layout="wide",
     page_icon="📈"
 )
 
-# --- QUANT PALETTE (White/Blue Theme) ---
-# Professional, Institutional Colors
-QUANT_PALETTE = ['#0D47A1', '#1976D2', '#42A5F5', '#90CAF9', '#2962FF'] # Deep Blue to Light Blue
-STRATEGY_COLOR = '#002984' # Dark Royal Blue
-BENCHMARK_COLOR = '#9E9E9E' # Grey
-POSITIVE_COLOR = '#2E7D32' # Professional Green
-NEGATIVE_COLOR = '#C62828' # Professional Red
-BACKGROUND_COLOR = '#FFFFFF'
-TEXT_COLOR = '#212121'
+# --- NEON DARK PALETTE ---
+SHARP_PALETTE = ['#00E5FF', '#FF4081', '#00E676', '#FFC400', '#651FFF'] # Cyan, Magenta, Lime, Amber, Purple
+BACKGROUND_COLOR = '#0E1117' 
+TEXT_COLOR = 'white'
 
-# Global Plot Settings for "Research Report" Look
+# Global Plot Settings for Dark Mode
 plt.rcParams.update({
     "figure.facecolor": BACKGROUND_COLOR,
     "axes.facecolor": BACKGROUND_COLOR,
-    "axes.edgecolor": "#E0E0E0", # Light grey borders
-    "axes.labelcolor": "#424242",
+    "axes.edgecolor": "#333333",
+    "axes.labelcolor": TEXT_COLOR,
     "text.color": TEXT_COLOR,
-    "xtick.color": "#616161",
-    "ytick.color": "#616161",
-    "grid.color": "#EEEEEE", # Very subtle grid
-    "grid.linestyle": "-",
+    "xtick.color": TEXT_COLOR,
+    "ytick.color": TEXT_COLOR,
+    "grid.color": "#333333",
+    "grid.linestyle": ":",
     "grid.linewidth": 0.5,
-    "axes.spines.top": True, # Boxed look
-    "axes.spines.right": True,
-    "axes.spines.left": True,
-    "axes.spines.bottom": True,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
     "font.family": "sans-serif",
 })
 
-# Custom CSS for Streamlit
+# Custom CSS for Neon/Dark Look
 st.markdown(f"""
 <style>
-    /* Force Light Theme Logic */
+    /* Main Background */
     .stApp {{
-        background-color: #F5F7F9; /* Very light blue-grey background */
+        background-color: {BACKGROUND_COLOR};
     }}
     
-    /* Metrics Styling */
+    /* Metrics */
     [data-testid="stMetricValue"] {{
-        color: #0D47A1;
+        color: #00E5FF; /* Cyan */
         font-family: 'Roboto Mono', monospace;
     }}
     
-    /* Professional Tabs */
+    /* Tabs */
     .stTabs [data-baseweb="tab-list"] {{
         gap: 8px;
         background-color: transparent;
@@ -79,36 +72,28 @@ st.markdown(f"""
     
     .stTabs [data-baseweb="tab"] {{
         height: 45px;
-        background-color: #FFFFFF;
-        border: 1px solid #E0E0E0;
+        background-color: #161B22;
+        border: 1px solid #333;
         border-radius: 4px;
-        color: #616161;
-        font-weight: 500;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        color: #888;
     }}
     
     .stTabs [aria-selected="true"] {{
-        background-color: #E3F2FD;
-        border: 1px solid #1976D2;
-        color: #0D47A1;
+        background-color: rgba(0, 229, 255, 0.1);
+        border: 1px solid #00E5FF;
+        color: #00E5FF;
         font-weight: bold;
     }}
     
     /* Buttons */
     div.stButton > button {{
-        background-color: #1565C0;
-        color: white;
-        border: none;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        background-color: #21262d;
+        color: #00E5FF;
+        border: 1px solid #30363d;
     }}
     div.stButton > button:hover {{
-        background-color: #0D47A1;
+        border-color: #00E5FF;
         color: white;
-    }}
-    
-    h1, h2, h3 {{
-        color: #0D47A1;
-        font-weight: 700;
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -438,11 +423,11 @@ def run_ml_forecasting(df, feature_cols, target_col="Target", test_size=0.2):
 
 # --- Main App ---
 
-st.title("Wasserstein Quant Terminal")
+st.title("Wasserstein AI Trader")
 st.markdown("**Distributional Market Regime & Arbitrage Analysis**")
 
 # Sidebar
-st.sidebar.header("Data Parameters")
+st.sidebar.header("Asset Selection")
 asset_select = st.sidebar.selectbox("Asset", ["Gold", "ES (S&P 500)", "NQ (Nasdaq)", "BTC (Bitcoin)", "EURUSD", "Silver", "RTY (Russell 2000)", "GBPUSD"])
 config = get_asset_config(asset_select)
 primary_t = config['primary']
@@ -456,19 +441,22 @@ start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2018-01-01"))
 end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 k_clusters = st.sidebar.slider("Regimes (k)", 2, 5, 2)
 window_size = st.sidebar.slider("Window Size (days)", 20, 100, 50)
+step_size = st.sidebar.slider("Slide Step (days)", 1, 20, 5) # Added slide step control
+
+st.sidebar.header("Risk Params")
 target_vol = st.sidebar.number_input("Target Volatility (%)", value=10.0, step=1.0) / 100.0
 txn_cost = st.sidebar.number_input("Trans. Cost (bps)", value=5.0, step=1.0)
 
 if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
-    with st.spinner("Fetching Market Data..."):
+    with st.spinner("Analyzing Market Distribution..."):
         df, ticker_used = fetch_data(primary_t, fallback_t, start_date, end_date)
         vix_df = fetch_vix(start_date, end_date)
-        st.toast(f"Correlating pair candidates...")
+        st.toast(f"Finding correlated pairs...")
         best_pair_ticker, df_pair, best_corr, real_corr_val = find_best_pair(df, candidate_list, start_date, end_date)
         
         if df is not None and len(df) > window_size:
             # 1. Regimes
-            segments, time_indices = lift_data(df['LogReturn'], window_size, 5) # Default step 5
+            segments, time_indices = lift_data(df['LogReturn'], window_size, step_size) 
             labels, centroids, anomaly_scores = wk_means_clustering(segments, k_clusters)
             res = pd.DataFrame(index=time_indices)
             res['Regime'] = labels
@@ -522,12 +510,12 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
             # 1. Regimes
             with t1:
                 fig, ax = plt.subplots(figsize=(12, 5))
-                ax.plot(main_df.index, main_df['Adj Close'], color='#BDBDBD', alpha=0.3, lw=1)
+                ax.plot(main_df.index, main_df['Adj Close'], color='#FFFFFF', alpha=0.15, lw=1)
                 for i in range(k_clusters):
                     subset = main_df[main_df['Regime'] == i]
-                    ax.scatter(subset.index, subset['Adj Close'], color=QUANT_PALETTE[i], s=10, label=f'Regime {i}', zorder=5)
-                ax.legend(frameon=True, facecolor='white', framealpha=1)
-                ax.set_title(f"{asset_select} Price Path by Regime", fontsize=10, fontweight='bold', color=STRATEGY_COLOR)
+                    ax.scatter(subset.index, subset['Adj Close'], color=SHARP_PALETTE[i], s=10, label=f'Regime {i}', zorder=5)
+                ax.legend(frameon=False)
+                ax.set_title(f"{asset_select} Price Path by Regime", fontsize=10, fontweight='bold', color='white')
                 st.pyplot(fig)
 
             # 2. Forecast
@@ -538,16 +526,16 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                     cum_strat = (1 + strat_ret).cumprod()
                     cum_bh = (1 + y_true).cumprod()
                     fig_f, ax_f = plt.subplots(figsize=(10, 5))
-                    ax_f.plot(test_dates, cum_bh, color=BENCHMARK_COLOR, alpha=0.5, ls='--', label='Buy & Hold')
-                    ax_f.plot(test_dates, cum_strat, color=STRATEGY_COLOR, lw=2, label='ML Strategy')
-                    ax_f.legend(frameon=True, facecolor='white')
-                    ax_f.set_title("ML Directional Strategy (Out-of-Sample)", fontsize=10, fontweight='bold', color=STRATEGY_COLOR)
+                    ax_f.plot(test_dates, cum_bh, color='white', alpha=0.3, ls='--', label='Buy & Hold')
+                    ax_f.plot(test_dates, cum_strat, color=SHARP_PALETTE[0], lw=2, label='ML Strategy')
+                    ax_f.legend(frameon=False)
+                    ax_f.set_title("ML Directional Strategy (Out-of-Sample)", fontsize=10, fontweight='bold', color='white')
                     st.pyplot(fig_f)
                 with c_b:
                     imps = pd.DataFrame({'Feature': feature_cols, 'Importance': model.feature_importances_}).sort_values('Importance', ascending=False)
                     fig_i, ax_i = plt.subplots(figsize=(4, 6))
-                    sns.barplot(x='Importance', y='Feature', data=imps.head(10), ax=ax_i, palette="Blues_r")
-                    ax_i.set_title("Feature Importance", fontsize=10, fontweight='bold')
+                    sns.barplot(x='Importance', y='Feature', data=imps.head(10), ax=ax_i, palette="viridis")
+                    ax_i.set_title("Feature Importance", fontsize=10, fontweight='bold', color='white')
                     st.pyplot(fig_i)
 
             # 3. Pairs
@@ -555,11 +543,11 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                 if dist_series is not None:
                     z_score = (dist_series - dist_series.mean()) / dist_series.std()
                     fig_p, ax_p = plt.subplots(figsize=(12, 5))
-                    ax_p.plot(dist_series.index, z_score, color=QUANT_PALETTE[2], lw=1.5, label='Wasserstein Z-Score')
-                    ax_p.axhline(2, color=NEGATIVE_COLOR, ls='--', alpha=0.6, label='Sell Threshold')
-                    ax_p.axhline(-2, color=POSITIVE_COLOR, ls='--', alpha=0.6, label='Buy Threshold')
-                    ax_p.legend(frameon=True, facecolor='white')
-                    ax_p.set_title(f"Statistical Arbitrage: {asset_select} vs {best_pair_ticker}", fontsize=10, fontweight='bold', color=STRATEGY_COLOR)
+                    ax_p.plot(dist_series.index, z_score, color=SHARP_PALETTE[2], lw=1.5, label='Wasserstein Z-Score')
+                    ax_p.axhline(2, color='red', ls='--', alpha=0.6, label='Sell Threshold')
+                    ax_p.axhline(-2, color='green', ls='--', alpha=0.6, label='Buy Threshold')
+                    ax_p.legend(frameon=False)
+                    ax_p.set_title(f"Statistical Arbitrage: {asset_select} vs {best_pair_ticker}", fontsize=10, fontweight='bold', color='white')
                     st.pyplot(fig_p)
                 else:
                     st.warning("No correlation data available.")
@@ -568,8 +556,8 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
             with t4:
                 st.markdown(f"**News Source: {news_source}**")
                 for item in news_items[:5]:
-                    color = POSITIVE_COLOR if item['score'] > 0.05 else NEGATIVE_COLOR if item['score'] < -0.05 else BENCHMARK_COLOR
-                    st.markdown(f"<span style='color:{color}'>●</span> **{item['score']:.2f}** {item['title']}", unsafe_allow_html=True)
+                    color = "🟢" if item['score'] > 0.05 else "🔴" if item['score'] < -0.05 else "⚪"
+                    st.markdown(f"{color} **{item['score']:.2f}** {item['title']}")
 
             # 5. Risk
             with t5:
@@ -580,15 +568,15 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                     fig_mv, ax_mv = plt.subplots(figsize=(6, 5))
                     for i in range(k_clusters):
                         m = labels == i
-                        ax_mv.scatter(w_vols[m], w_means[m], color=QUANT_PALETTE[i], s=15, alpha=0.7, label=f'Regime {i}')
+                        ax_mv.scatter(w_vols[m], w_means[m], color=SHARP_PALETTE[i], s=15, alpha=0.7, label=f'Regime {i}')
                     ax_mv.set_xlabel("Annualized Volatility")
                     ax_mv.set_ylabel("Annualized Return")
-                    ax_mv.legend(frameon=True, facecolor='white')
+                    ax_mv.legend(frameon=False)
                     st.pyplot(fig_mv)
                 with c_2:
                     fig_ad, ax_ad = plt.subplots(figsize=(6, 5))
-                    ax_ad.plot(main_df.index, main_df['Anomaly_Score'], color=NEGATIVE_COLOR, lw=1)
-                    ax_ad.set_title("Market fragility (Anomaly Score)", fontsize=10)
+                    ax_ad.plot(main_df.index, main_df['Anomaly_Score'], color=SHARP_PALETTE[1], lw=1)
+                    ax_ad.set_title("Market fragility (Anomaly Score)", fontsize=10, color='white')
                     st.pyplot(fig_ad)
 
             # 6. Backtest
@@ -603,15 +591,15 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                 col_c.metric("Avg Leverage", f"{backtest_df['Position'].mean():.2f}x")
 
                 fig_bt, ax_bt = plt.subplots(figsize=(12, 5))
-                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=STRATEGY_COLOR, lw=2, label="Vol-Targeted Strategy")
-                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color=BENCHMARK_COLOR, alpha=0.5, ls='--', label="Buy & Hold")
+                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=SHARP_PALETTE[3], lw=2, label="Vol-Targeted Strategy")
+                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color='white', alpha=0.3, ls='--', label="Buy & Hold")
                 
                 ax2 = ax_bt.twinx()
-                ax2.fill_between(backtest_df.index, backtest_df['Position'], color=QUANT_PALETTE[3], alpha=0.15)
-                ax2.set_ylabel("Leverage", color=QUANT_PALETTE[1])
+                ax2.fill_between(backtest_df.index, backtest_df['Position'], color=SHARP_PALETTE[3], alpha=0.15)
+                ax2.set_ylabel("Leverage", color=SHARP_PALETTE[1])
                 
-                ax_bt.legend(loc='upper left', frameon=True, facecolor='white')
-                ax_bt.set_title("Backtest Performance (Net of Costs)", fontsize=10, fontweight='bold', color=STRATEGY_COLOR)
+                ax_bt.legend(loc='upper left', frameon=False)
+                ax_bt.set_title("Backtest Performance (Net of Costs)", fontsize=10, fontweight='bold', color='white')
                 st.pyplot(fig_bt)
 
             # 7. Benchmark
@@ -619,7 +607,7 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                 blabels, bindices = moment_kmeans_clustering(df['LogReturn'], window_size, 5, k_clusters)
                 bdf = pd.DataFrame({'Cluster': blabels}, index=bindices).join(df[['Adj Close']])
                 fig_b, ax_b = plt.subplots(figsize=(12, 5))
-                ax_b.plot(bdf.index, bdf['Adj Close'], color='#BDBDBD', alpha=0.3)
+                ax_b.plot(bdf.index, bdf['Adj Close'], color='#FFFFFF', alpha=0.3)
                 for i in range(k_clusters):
                     s = bdf[bdf['Cluster'] == i]
                     ax_b.scatter(s.index, s['Adj Close'], color=['orange','purple','brown','cyan'][i%4], s=10, alpha=0.6)
