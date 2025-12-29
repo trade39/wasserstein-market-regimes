@@ -15,7 +15,7 @@ from ta.volatility import BollingerBands
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-# Download VADER lexicon for sentiment analysis
+# Download VADER lexicon
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
@@ -24,7 +24,6 @@ except LookupError:
 # --- Configuration & Styles ---
 st.set_page_config(page_title="Wasserstein AI Trader", layout="wide")
 
-# Sharp, High-Contrast Palette
 SHARP_PALETTE = ['#00E5FF', '#FF4081', '#00E676', '#FFC400', '#651FFF']
 BACKGROUND_COLOR = '#0E1117' 
 
@@ -73,19 +72,66 @@ st.markdown("""
 
 # --- Helper Functions ---
 
-def get_ticker_and_fallback(asset_name):
+def get_asset_config(asset_name):
+    """
+    Returns:
+    1. Primary Ticker (for Price)
+    2. Fallback Ticker (for Price if Primary fails)
+    3. News Proxies (List of tickers to check for news if Primary fails)
+    """
     mapping = {
-        "Gold": ("GC=F", "GLD"),
-        "Silver": ("SI=F", "SLV"),
-        "EURUSD": ("EURUSD=X", "FXE"),
-        "GBPUSD": ("GBPUSD=X", "FXB"),
-        "ES (S&P 500)": ("ES=F", "SPY"),
-        "NQ (Nasdaq)": ("NQ=F", "QQQ"),
-        "RTY (Russell 2000)": ("RTY=F", "IWM"),
-        "BTC (Bitcoin)": ("BTC-USD", "BITO"),
-        "ETH (Ethereum)": ("ETH-USD", "ETHE")
+        "Gold": {
+            "primary": "GC=F", 
+            "price_fallback": "GLD", 
+            "news_proxies": ["GC=F", "GLD", "NEM", "GOLD", "GDX"] # Futures, ETF, Newmont, Barrick, Miners ETF
+        },
+        "Silver": {
+            "primary": "SI=F", 
+            "price_fallback": "SLV", 
+            "news_proxies": ["SI=F", "SLV", "PAAS", "AG"]
+        },
+        "EURUSD": {
+            "primary": "EURUSD=X", 
+            "price_fallback": "FXE", 
+            "news_proxies": ["EURUSD=X", "FXE", "UUP"]
+        },
+        "GBPUSD": {
+            "primary": "GBPUSD=X", 
+            "price_fallback": "FXB", 
+            "news_proxies": ["GBPUSD=X", "FXB", "UUP"]
+        },
+        "ES (S&P 500)": {
+            "primary": "ES=F", 
+            "price_fallback": "SPY", 
+            "news_proxies": ["ES=F", "SPY", "IVV", "VOO"]
+        },
+        "NQ (Nasdaq)": {
+            "primary": "NQ=F", 
+            "price_fallback": "QQQ", 
+            "news_proxies": ["NQ=F", "QQQ", "TQQQ", "AAPL", "MSFT"] # Tech giants often drive NQ sentiment
+        },
+        "RTY (Russell 2000)": {
+            "primary": "RTY=F", 
+            "price_fallback": "IWM", 
+            "news_proxies": ["RTY=F", "IWM", "TNA"]
+        },
+        "BTC (Bitcoin)": {
+            "primary": "BTC-USD", 
+            "price_fallback": "BITO", 
+            "news_proxies": ["BTC-USD", "BITO", "COIN", "MSTR"] # Coinbase & MicroStrategy are good proxies
+        },
+        "ETH (Ethereum)": {
+            "primary": "ETH-USD", 
+            "price_fallback": "ETHE", 
+            "news_proxies": ["ETH-USD", "ETHE", "COIN"]
+        }
     }
-    return mapping.get(asset_name, ("SPY", "SPY"))
+    # Default
+    return mapping.get(asset_name, {
+        "primary": "SPY", 
+        "price_fallback": "SPY", 
+        "news_proxies": ["SPY"]
+    })
 
 @st.cache_data
 def fetch_data(primary_ticker, fallback_ticker, start_date, end_date):
@@ -129,7 +175,6 @@ def fetch_data(primary_ticker, fallback_ticker, start_date, end_date):
     return data, used_ticker
 
 def fetch_vix(start_date, end_date):
-    """Fetches VIX data to use as a Sentiment/Fear proxy for the ML model."""
     try:
         vix = yf.download("^VIX", start=start_date, end=end_date, progress=False, auto_adjust=False)
         if isinstance(vix.columns, pd.MultiIndex):
@@ -138,35 +183,42 @@ def fetch_vix(start_date, end_date):
     except:
         return None
 
-def get_live_news_sentiment(primary_ticker, fallback_ticker):
+def get_live_news_sentiment(news_proxies):
     """
-    Robust news fetcher. 
-    If primary ticker (e.g. GC=F) returns empty/broken news, switches to fallback (e.g. GLD).
+    Robust news fetcher. Cycles through a list of proxies (e.g. Future -> ETF -> Miner)
+    until it finds valid news.
     """
     sia = SentimentIntensityAnalyzer()
     
     def fetch_valid_news(t):
         try:
             raw_news = yf.Ticker(t).news
-            # Filter for items that actually have a title
-            valid = [item for item in raw_news if item.get('title')]
+            # Strict filter: Must have title and link
+            valid = [item for item in raw_news if item.get('title') and item.get('link')]
             return valid
         except:
             return []
 
-    # 1. Try Primary
-    news = fetch_valid_news(primary_ticker)
-    ticker_used = primary_ticker
+    found_news = []
+    source_used = "None"
 
-    # 2. If Primary failed (empty list), try Fallback
-    if not news:
-        news = fetch_valid_news(fallback_ticker)
-        ticker_used = fallback_ticker
+    # Iterate through proxies until we find news
+    for ticker in news_proxies:
+        found_news = fetch_valid_news(ticker)
+        if found_news:
+            source_used = ticker
+            break
+            
+    # If still no news, try a generic market fallback
+    if not found_news:
+        found_news = fetch_valid_news("SPY")
+        if found_news:
+            source_used = "Market Context (SPY)"
 
     scored_news = []
     total_score = 0
     
-    for item in news:
+    for item in found_news:
         title = item.get('title', 'No Title')
         score = sia.polarity_scores(title)['compound']
         publisher = item.get('publisher', 'Unknown')
@@ -180,35 +232,31 @@ def get_live_news_sentiment(primary_ticker, fallback_ticker):
         })
         total_score += score
         
-    avg_score = total_score / len(news) if news else 0
-    return scored_news, avg_score, ticker_used
+    avg_score = total_score / len(found_news) if found_news else 0
+    return scored_news, avg_score, source_used
 
-# --- Core Math Functions ---
+# --- Math Functions ---
 
 def lift_data(log_returns, h1, h2):
     n = len(log_returns)
     segments = []
     indices = []
-    
     for i in range(0, n - h1 + 1, h2):
         window = log_returns.iloc[i : i + h1].values
         segments.append(np.sort(window))
         indices.append(log_returns.index[i + h1 - 1])
-        
     return np.array(segments), indices
 
 def calculate_wasserstein_distance_series(returns_a, returns_b, window_size):
     df = pd.DataFrame({'A': returns_a, 'B': returns_b}).dropna()
     distances = []
     indices = []
-    
     for i in range(window_size, len(df)):
         win_a = df['A'].iloc[i-window_size:i].values
         win_b = df['B'].iloc[i-window_size:i].values
         d = wasserstein_distance(win_a, win_b)
         distances.append(d)
         indices.append(df.index[i])
-        
     return pd.Series(distances, index=indices)
 
 def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
@@ -287,7 +335,7 @@ def run_backtest(price_series, labels, time_indices):
     
     return aligned_signals, safe_regime
 
-# --- Forecasting Functions ---
+# --- Forecasting ---
 
 def add_technical_indicators(df, vix_data=None):
     df = df.copy()
@@ -326,25 +374,29 @@ st.markdown("Optimal Transport Clustering | Hybrid ML Forecasting | Statistical 
 
 # Sidebar
 st.sidebar.header("Asset Selection")
-asset_select = st.sidebar.selectbox("Primary Asset", ["Gold", "ES (S&P 500)", "NQ (Nasdaq)", "BTC (Bitcoin)", "EURUSD"])
-primary_t, fallback_t = get_ticker_and_fallback(asset_select)
+asset_select = st.sidebar.selectbox("Primary Asset", ["Gold", "ES (S&P 500)", "NQ (Nasdaq)", "BTC (Bitcoin)", "EURUSD", "Silver", "RTY (Russell 2000)", "GBPUSD"])
+# Get Config
+config = get_asset_config(asset_select)
+primary_t = config['primary']
+fallback_t = config['price_fallback']
+news_proxies = config['news_proxies']
 
-st.sidebar.markdown("### Pairs Trading (Idea 3)")
-pair_select = st.sidebar.selectbox("Comparison Asset (for Stat Arb)", ["Silver", "RTY (Russell 2000)", "ETH (Ethereum)", "GBPUSD", "Gold", "ES (S&P 500)"], index=0)
-pair_t, pair_fallback_t = get_ticker_and_fallback(pair_select)
+st.sidebar.markdown("### Pairs Trading")
+pair_select = st.sidebar.selectbox("Comparison Asset", ["Silver", "RTY (Russell 2000)", "ETH (Ethereum)", "GBPUSD", "Gold", "ES (S&P 500)"], index=0)
+pair_config = get_asset_config(pair_select)
+pair_t = pair_config['primary']
+pair_fallback_t = pair_config['price_fallback']
 
 st.sidebar.divider()
-st.sidebar.header("Data Range")
+st.sidebar.header("Settings")
 start_date = st.sidebar.date_input("Start", pd.to_datetime("2018-01-01"))
 end_date = st.sidebar.date_input("End", pd.to_datetime("today"))
-
-st.sidebar.header("Model Parameters")
 k_clusters = st.sidebar.slider("Regimes (k)", 2, 5, 2)
 window_size = st.sidebar.slider("Window Size (h1)", 20, 100, 50)
 step_size = st.sidebar.slider("Slide Step (h2)", 1, 20, 5)
 
 if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
-    with st.spinner("Initializing Hybrid Model..."):
+    with st.spinner("Initializing Models..."):
         df, ticker_used = fetch_data(primary_t, fallback_t, start_date, end_date)
         vix_df = fetch_vix(start_date, end_date)
         df_pair, pair_ticker_used = fetch_data(pair_t, pair_fallback_t, start_date, end_date)
@@ -362,7 +414,7 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             main_df = main_df.dropna(subset=['Regime'])
             main_df['Regime'] = main_df['Regime'].astype(int)
 
-            # 2. Hybrid Forecast
+            # 2. Forecast
             main_df = add_technical_indicators(main_df, vix_df)
             regime_dummies = pd.get_dummies(main_df['Regime'], prefix='Regime')
             main_df = pd.concat([main_df, regime_dummies], axis=1)
@@ -371,8 +423,8 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             feature_cols += [c for c in main_df.columns if c.startswith("Regime_")]
             test_dates, y_true, y_pred, mse, acc, model = run_ml_forecasting(main_df, feature_cols)
 
-            # 3. Sentiment Fix
-            news_items, news_score, news_ticker_source = get_live_news_sentiment(ticker_used, fallback_t)
+            # 3. Sentiment (Aggressive Fetch)
+            news_items, news_score, news_source = get_live_news_sentiment(news_proxies)
 
             # 4. Pairs
             dist_series = None
@@ -389,7 +441,7 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Current Regime", f"Regime {last_regime}")
             c2.metric("Forecast Accuracy", f"{acc:.1%}")
-            c3.metric(f"Sentiment ({news_ticker_source})", f"{news_score:.2f}", delta="Bullish" if news_score > 0.05 else "Bearish" if news_score < -0.05 else "Neutral")
+            c3.metric(f"Sentiment ({news_source})", f"{news_score:.2f}", delta="Bullish" if news_score > 0.05 else "Bearish" if news_score < -0.05 else "Neutral")
             c4.metric("Pair Divergence", f"{dist_series.iloc[-1]:.4f}" if dist_series is not None else "N/A")
             
             st.markdown("---")
@@ -432,13 +484,13 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                     st.pyplot(fig_p)
 
             with tabs[3]:
-                st.markdown(f"**Latest News: {news_ticker_source}**")
+                st.markdown(f"**Latest News: {news_source}**")
                 if news_items:
                     for item in news_items[:5]:
                         emoji = "🟢" if item['score'] > 0.05 else "🔴" if item['score'] < -0.05 else "⚪"
-                        st.markdown(f"{emoji} **[{item['score']}]** [{item['title']}]({item['link']}) *({item['publisher']})*")
+                        st.markdown(f"{emoji} **[{item['score']:.2f}]** [{item['title']}]({item['link']})")
                 else:
-                    st.info("No valid news found.")
+                    st.info("No valid news found even after fallback.")
 
             with tabs[4]:
                 c1, c2 = st.columns(2)
