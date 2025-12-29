@@ -73,17 +73,12 @@ st.markdown("""
 # --- Helper Functions ---
 
 def get_asset_config(asset_name):
-    """
-    Returns:
-    1. Primary Ticker (for Price)
-    2. Fallback Ticker (for Price if Primary fails)
-    3. News Proxies (List of tickers to check for news if Primary fails)
-    """
+    """Returns tickers and news proxies for each asset."""
     mapping = {
         "Gold": {
             "primary": "GC=F", 
             "price_fallback": "GLD", 
-            "news_proxies": ["GC=F", "GLD", "NEM", "GOLD", "GDX"] # Futures, ETF, Newmont, Barrick, Miners ETF
+            "news_proxies": ["GC=F", "GLD", "NEM", "GOLD", "GDX"]
         },
         "Silver": {
             "primary": "SI=F", 
@@ -108,7 +103,7 @@ def get_asset_config(asset_name):
         "NQ (Nasdaq)": {
             "primary": "NQ=F", 
             "price_fallback": "QQQ", 
-            "news_proxies": ["NQ=F", "QQQ", "TQQQ", "AAPL", "MSFT"] # Tech giants often drive NQ sentiment
+            "news_proxies": ["NQ=F", "QQQ", "TQQQ", "AAPL", "MSFT"]
         },
         "RTY (Russell 2000)": {
             "primary": "RTY=F", 
@@ -118,7 +113,7 @@ def get_asset_config(asset_name):
         "BTC (Bitcoin)": {
             "primary": "BTC-USD", 
             "price_fallback": "BITO", 
-            "news_proxies": ["BTC-USD", "BITO", "COIN", "MSTR"] # Coinbase & MicroStrategy are good proxies
+            "news_proxies": ["BTC-USD", "BITO", "COIN", "MSTR"]
         },
         "ETH (Ethereum)": {
             "primary": "ETH-USD", 
@@ -126,12 +121,7 @@ def get_asset_config(asset_name):
             "news_proxies": ["ETH-USD", "ETHE", "COIN"]
         }
     }
-    # Default
-    return mapping.get(asset_name, {
-        "primary": "SPY", 
-        "price_fallback": "SPY", 
-        "news_proxies": ["SPY"]
-    })
+    return mapping.get(asset_name, {"primary": "SPY", "price_fallback": "SPY", "news_proxies": ["SPY"]})
 
 @st.cache_data
 def fetch_data(primary_ticker, fallback_ticker, start_date, end_date):
@@ -185,16 +175,16 @@ def fetch_vix(start_date, end_date):
 
 def get_live_news_sentiment(news_proxies):
     """
-    Robust news fetcher. Cycles through a list of proxies (e.g. Future -> ETF -> Miner)
-    until it finds valid news.
+    Tries to fetch news. If API fails (returns empty), returns None 
+    so the app knows to switch to Technical Sentiment.
     """
     sia = SentimentIntensityAnalyzer()
     
     def fetch_valid_news(t):
         try:
             raw_news = yf.Ticker(t).news
-            # Strict filter: Must have title and link
-            valid = [item for item in raw_news if item.get('title') and item.get('link')]
+            # Relaxed Filter: Only needs a Title.
+            valid = [item for item in raw_news if item.get('title')]
             return valid
         except:
             return []
@@ -202,18 +192,15 @@ def get_live_news_sentiment(news_proxies):
     found_news = []
     source_used = "None"
 
-    # Iterate through proxies until we find news
     for ticker in news_proxies:
         found_news = fetch_valid_news(ticker)
         if found_news:
             source_used = ticker
             break
             
-    # If still no news, try a generic market fallback
+    # If API is completely blocked/empty
     if not found_news:
-        found_news = fetch_valid_news("SPY")
-        if found_news:
-            source_used = "Market Context (SPY)"
+        return [], 0.0, None
 
     scored_news = []
     total_score = 0
@@ -234,6 +221,50 @@ def get_live_news_sentiment(news_proxies):
         
     avg_score = total_score / len(found_news) if found_news else 0
     return scored_news, avg_score, source_used
+
+def get_technical_sentiment(last_row):
+    """Calculates a Synthetic Sentiment Score based on Technicals if News fails."""
+    score = 0
+    reasons = []
+    
+    # RSI Logic
+    if last_row['RSI'] > 50: 
+        score += 0.3
+        reasons.append("RSI Bullish (>50)")
+    else:
+        score -= 0.3
+        reasons.append("RSI Bearish (<50)")
+        
+    # Trend Logic (Price vs SMA)
+    if last_row['Dist_SMA_20'] > 0:
+        score += 0.4
+        reasons.append("Price above SMA20")
+    else:
+        score -= 0.4
+        reasons.append("Price below SMA20")
+        
+    # MACD Logic
+    if last_row['MACD'] > 0:
+        score += 0.2
+        reasons.append("MACD Positive")
+    else:
+        score -= 0.2
+        reasons.append("MACD Negative")
+        
+    # Normalize to -1 to 1 range (approx)
+    score = max(min(score, 0.9), -0.9)
+    
+    # Create fake "News Items" to display the reasons
+    dummy_news = []
+    for r in reasons:
+        dummy_news.append({
+            'title': r,
+            'score': 0.5 if "Bullish" in r or "above" in r or "Positive" in r else -0.5,
+            'link': '#',
+            'publisher': 'Technical Indicator'
+        })
+        
+    return dummy_news, score, "Technical Indicators (Fallback)"
 
 # --- Math Functions ---
 
@@ -375,7 +406,6 @@ st.markdown("Optimal Transport Clustering | Hybrid ML Forecasting | Statistical 
 # Sidebar
 st.sidebar.header("Asset Selection")
 asset_select = st.sidebar.selectbox("Primary Asset", ["Gold", "ES (S&P 500)", "NQ (Nasdaq)", "BTC (Bitcoin)", "EURUSD", "Silver", "RTY (Russell 2000)", "GBPUSD"])
-# Get Config
 config = get_asset_config(asset_select)
 primary_t = config['primary']
 fallback_t = config['price_fallback']
@@ -423,8 +453,12 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             feature_cols += [c for c in main_df.columns if c.startswith("Regime_")]
             test_dates, y_true, y_pred, mse, acc, model = run_ml_forecasting(main_df, feature_cols)
 
-            # 3. Sentiment (Aggressive Fetch)
+            # 3. Sentiment (with Technical Fallback)
             news_items, news_score, news_source = get_live_news_sentiment(news_proxies)
+            
+            # FAILSAFE: If News API is blocked, use Technicals
+            if news_source is None:
+                news_items, news_score, news_source = get_technical_sentiment(main_df.iloc[-1])
 
             # 4. Pairs
             dist_series = None
@@ -484,13 +518,10 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                     st.pyplot(fig_p)
 
             with tabs[3]:
-                st.markdown(f"**Latest News: {news_source}**")
-                if news_items:
-                    for item in news_items[:5]:
-                        emoji = "🟢" if item['score'] > 0.05 else "🔴" if item['score'] < -0.05 else "⚪"
-                        st.markdown(f"{emoji} **[{item['score']:.2f}]** [{item['title']}]({item['link']})")
-                else:
-                    st.info("No valid news found even after fallback.")
+                st.markdown(f"**Source: {news_source}**")
+                for item in news_items[:5]:
+                    emoji = "🟢" if item['score'] > 0.05 else "🔴" if item['score'] < -0.05 else "⚪"
+                    st.markdown(f"{emoji} **[{item['score']:.2f}]** {item['title']} *({item['publisher']})*")
 
             with tabs[4]:
                 c1, c2 = st.columns(2)
