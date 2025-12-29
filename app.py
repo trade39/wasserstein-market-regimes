@@ -73,28 +73,21 @@ st.markdown("""
 # --- Helper Functions ---
 
 def get_asset_config(asset_name):
-    """
-    Returns:
-    1. Primary Ticker (for Price)
-    2. Fallback Ticker (for Price if Primary fails)
-    3. News Proxies (List of tickers to check for news)
-    4. Correlation Candidates (List of potential pairs for auto-selection)
-    """
     mapping = {
         "Gold": {
             "primary": "GC=F", "price_fallback": "GLD", 
             "news_proxies": ["GC=F", "GLD", "NEM", "GOLD", "GDX"],
-            "candidates": ["SI=F", "GDX", "DX-Y.NYB", "^TNX", "AUDUSD=X"] # Silver, Miners, Dollar, 10Y Yield, Aussie Dollar
+            "candidates": ["SI=F", "GDX", "DX-Y.NYB", "^TNX", "AUDUSD=X"] 
         },
         "Silver": {
             "primary": "SI=F", "price_fallback": "SLV", 
             "news_proxies": ["SI=F", "SLV", "PAAS", "AG"],
-            "candidates": ["GC=F", "COPX", "GDX", "DX-Y.NYB"] # Gold, Copper, Miners, Dollar
+            "candidates": ["GC=F", "COPX", "GDX", "DX-Y.NYB"]
         },
         "EURUSD": {
             "primary": "EURUSD=X", "price_fallback": "FXE", 
             "news_proxies": ["EURUSD=X", "FXE", "UUP"],
-            "candidates": ["GBPUSD=X", "DX-Y.NYB", "CHF=X", "GC=F"] # GBP, Dollar, Franc, Gold
+            "candidates": ["GBPUSD=X", "DX-Y.NYB", "CHF=X", "GC=F"] 
         },
         "GBPUSD": {
             "primary": "GBPUSD=X", "price_fallback": "FXB", 
@@ -104,22 +97,22 @@ def get_asset_config(asset_name):
         "ES (S&P 500)": {
             "primary": "ES=F", "price_fallback": "SPY", 
             "news_proxies": ["ES=F", "SPY", "IVV", "VOO"],
-            "candidates": ["NQ=F", "RTY=F", "^VIX", "HYG", "JNK"] # Nasdaq, Russell, VIX, Junk Bonds
+            "candidates": ["NQ=F", "RTY=F", "^VIX", "HYG", "JNK"] 
         },
         "NQ (Nasdaq)": {
             "primary": "NQ=F", "price_fallback": "QQQ", 
             "news_proxies": ["NQ=F", "QQQ", "TQQQ", "AAPL", "MSFT"],
-            "candidates": ["ES=F", "XLK", "SMH", "ARKK"] # S&P, Tech ETF, Semis, ARK
+            "candidates": ["ES=F", "XLK", "SMH", "ARKK"] 
         },
         "RTY (Russell 2000)": {
             "primary": "RTY=F", "price_fallback": "IWM", 
             "news_proxies": ["RTY=F", "IWM", "TNA"],
-            "candidates": ["ES=F", "MDY", "KRE"] # S&P, MidCap, Regional Banks
+            "candidates": ["ES=F", "MDY", "KRE"] 
         },
         "BTC (Bitcoin)": {
             "primary": "BTC-USD", "price_fallback": "BITO", 
             "news_proxies": ["BTC-USD", "BITO", "COIN", "MSTR"],
-            "candidates": ["ETH-USD", "COIN", "MSTR", "NQ=F", "GLD"] # Eth, Coinbase, Microstrat, Nasdaq, Gold
+            "candidates": ["ETH-USD", "COIN", "MSTR", "NQ=F", "GLD"] 
         },
         "ETH (Ethereum)": {
             "primary": "ETH-USD", "price_fallback": "ETHE", 
@@ -172,56 +165,34 @@ def fetch_data(primary_ticker, fallback_ticker, start_date, end_date):
 
 @st.cache_data
 def find_best_pair(primary_df, candidates, start_date, end_date):
-    """
-    Automated Pairs Selector.
-    Fetches data for all candidates, calculates correlation with Primary,
-    and returns the ticker with the highest absolute correlation.
-    """
     best_ticker = None
     best_corr = -1
     best_df = None
-    
-    # Extract primary returns for correlation check
-    # Ensure indices align (inner join logic)
     primary_rets = primary_df['LogReturn']
     
     for cand in candidates:
         try:
             df_cand = yf.download(cand, start=start_date, end=end_date, progress=False, auto_adjust=False)
-            
-            # Handle MultiIndex
             if isinstance(df_cand.columns, pd.MultiIndex):
                 df_cand.columns = df_cand.columns.get_level_values(0)
-                
             if 'Adj Close' in df_cand.columns:
                 df_cand['LogReturn'] = np.log(df_cand['Adj Close'] / df_cand['Adj Close'].shift(1))
             elif 'Close' in df_cand.columns:
                  df_cand['LogReturn'] = np.log(df_cand['Close'] / df_cand['Close'].shift(1))
             else:
                 continue
-                
             df_cand = df_cand.dropna()
-            
-            # Align indices
             common_idx = primary_rets.index.intersection(df_cand.index)
-            if len(common_idx) < 50: continue # Not enough overlapping data
-            
-            # Calculate Correlation
+            if len(common_idx) < 50: continue 
             corr = primary_rets.loc[common_idx].corr(df_cand.loc[common_idx]['LogReturn'])
-            
-            # We look for highest association (absolute correlation)
-            # e.g. -0.9 (Inverse pair) is just as good as 0.9 for pairs trading
             abs_corr = abs(corr)
-            
             if abs_corr > best_corr:
                 best_corr = abs_corr
                 best_ticker = cand
                 best_df = df_cand
                 real_corr = corr
-                
         except:
             continue
-            
     return best_ticker, best_df, best_corr, real_corr if best_ticker else 0
 
 def fetch_vix(start_date, end_date):
@@ -235,7 +206,6 @@ def fetch_vix(start_date, end_date):
 
 def get_live_news_sentiment(news_proxies):
     sia = SentimentIntensityAnalyzer()
-    
     def fetch_valid_news(t):
         try:
             raw_news = yf.Ticker(t).news
@@ -246,7 +216,6 @@ def get_live_news_sentiment(news_proxies):
 
     found_news = []
     source_used = "None"
-
     for ticker in news_proxies:
         found_news = fetch_valid_news(ticker)
         if found_news:
@@ -258,16 +227,13 @@ def get_live_news_sentiment(news_proxies):
 
     scored_news = []
     total_score = 0
-    
     for item in found_news:
         title = item.get('title', 'No Title')
         score = sia.polarity_scores(title)['compound']
         publisher = item.get('publisher', 'Unknown')
         link = item.get('link', '#')
-        
         scored_news.append({'title': title, 'score': score, 'link': link, 'publisher': publisher})
         total_score += score
-        
     avg_score = total_score / len(found_news) if found_news else 0
     return scored_news, avg_score, source_used
 
@@ -295,15 +261,8 @@ def get_technical_sentiment(last_row):
     score = max(min(score, 0.9), -0.9)
     dummy_news = []
     for r in reasons:
-        dummy_news.append({
-            'title': r,
-            'score': 0.5 if "Bullish" in r or "above" in r or "Positive" in r else -0.5,
-            'link': '#',
-            'publisher': 'Technical Indicator'
-        })
+        dummy_news.append({'title': r, 'score': 0.5 if "Bullish" in r or "above" in r or "Positive" in r else -0.5, 'link': '#', 'publisher': 'Technical Indicator'})
     return dummy_news, score, "Technical Indicators (Fallback)"
-
-# --- Math Functions ---
 
 def lift_data(log_returns, h1, h2):
     n = len(log_returns)
@@ -332,25 +291,19 @@ def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
     rng = np.random.default_rng(42)
     initial_indices = rng.choice(n_segments, size=k, replace=False)
     centroids = segments[initial_indices]
-    
     prev_loss = float('inf')
     labels = np.zeros(n_segments, dtype=int)
     distances_to_centroid = np.zeros(n_segments)
-    
     for iteration in range(max_iter):
         distances = np.zeros((n_segments, k))
         for j in range(k):
             diff = np.abs(segments - centroids[j]) 
             distances[:, j] = np.mean(diff, axis=1)
-            
         labels = np.argmin(distances, axis=1)
         distances_to_centroid = np.min(distances, axis=1)
         current_loss = np.sum(distances_to_centroid)
-        
-        if np.abs(prev_loss - current_loss) < tol:
-            break
+        if np.abs(prev_loss - current_loss) < tol: break
         prev_loss = current_loss
-        
         new_centroids = []
         for j in range(k):
             cluster_members = segments[labels == j]
@@ -359,7 +312,6 @@ def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
             else:
                 new_centroids.append(segments[rng.choice(n_segments)])
         centroids = np.array(new_centroids)
-        
     return labels, centroids, distances_to_centroid
 
 def moment_kmeans_clustering(log_returns, h1, h2, k):
@@ -380,24 +332,64 @@ def calculate_transition_matrix(labels):
     df = pd.DataFrame({'Current': labels[:-1], 'Next': labels[1:]})
     return pd.crosstab(df['Current'], df['Next'], normalize='index')
 
-def run_backtest(price_series, labels, time_indices):
+# --- PRO BACKTEST ENGINE ---
+def run_pro_backtest(price_series, labels, time_indices, target_vol_ann, cost_bps):
+    """
+    Advanced Backtest with Volatility Targeting and Transaction Costs.
+    """
     signal_df = pd.DataFrame(index=time_indices)
     signal_df['Regime'] = labels
+    
+    # Calculate daily returns
     full_returns = price_series.pct_change()
+    
+    # Align signals to daily data
     aligned_signals = signal_df.reindex(price_series.index).fillna(method='ffill')
+    
+    # 1. Determine "Safe" Regime (Lowest Vol)
     regime_vols = {}
     unique_regimes = np.unique(labels)
     for r in unique_regimes:
         mask = aligned_signals['Regime'] == r
-        regime_vols[r] = full_returns[mask].std()
+        regime_vols[r] = full_returns[mask].std() * np.sqrt(252) # Annualized
+        
     safe_regime = min(regime_vols, key=regime_vols.get)
-    aligned_signals['Position'] = np.where(aligned_signals['Regime'] == safe_regime, 1, 0)
-    aligned_signals['Position'] = aligned_signals['Position'].shift(1)
-    aligned_signals['Strategy_Return'] = aligned_signals['Position'] * full_returns
-    aligned_signals['BuyHold_Return'] = full_returns
-    aligned_signals['Strategy_Equity'] = (1 + aligned_signals['Strategy_Return'].fillna(0)).cumprod()
-    aligned_signals['BuyHold_Equity'] = (1 + aligned_signals['BuyHold_Return'].fillna(0)).cumprod()
-    return aligned_signals, safe_regime
+    
+    # 2. Position Sizing (Vol Targeting)
+    # If in safe regime: Target Vol / Regime Vol (capped at 1.5x leverage)
+    # If in risky regime: Cash (0.0)
+    
+    def get_position_size(row):
+        r = row['Regime']
+        if r == safe_regime:
+            r_vol = regime_vols[r]
+            if r_vol == 0: return 0.0
+            # Target Vol / Actual Vol (e.g. 10% / 5% = 2.0x leverage)
+            size = target_vol_ann / r_vol
+            return min(size, 1.5) # Cap leverage at 1.5x
+        else:
+            return 0.0 # Cash
+            
+    aligned_signals['Target_Pos'] = aligned_signals.apply(get_position_size, axis=1)
+    
+    # Shift position to T+1 (Trade next day)
+    aligned_signals['Position'] = aligned_signals['Target_Pos'].shift(1).fillna(0)
+    
+    # 3. Calculate Returns with Costs
+    aligned_signals['Asset_Ret'] = full_returns
+    aligned_signals['Gross_Ret'] = aligned_signals['Position'] * aligned_signals['Asset_Ret']
+    
+    # Calculate Cost: Change in position * Cost BPS
+    aligned_signals['Pos_Change'] = aligned_signals['Position'].diff().abs()
+    aligned_signals['Cost'] = aligned_signals['Pos_Change'] * (cost_bps / 10000)
+    
+    aligned_signals['Net_Ret'] = aligned_signals['Gross_Ret'] - aligned_signals['Cost']
+    
+    # Equity Curves
+    aligned_signals['Strategy_Equity'] = (1 + aligned_signals['Net_Ret'].fillna(0)).cumprod()
+    aligned_signals['BuyHold_Equity'] = (1 + aligned_signals['Asset_Ret'].fillna(0)).cumprod()
+    
+    return aligned_signals, safe_regime, regime_vols
 
 # --- Forecasting ---
 
@@ -453,18 +445,19 @@ k_clusters = st.sidebar.slider("Regimes (k)", 2, 5, 2)
 window_size = st.sidebar.slider("Window Size (h1)", 20, 100, 50)
 step_size = st.sidebar.slider("Slide Step (h2)", 1, 20, 5)
 
+st.sidebar.header("Strategy Params")
+target_vol = st.sidebar.number_input("Target Volatility (%)", value=10.0, step=1.0) / 100.0
+txn_cost = st.sidebar.number_input("Transaction Cost (bps)", value=5.0, step=1.0)
+
 if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
     with st.spinner("Initializing Models..."):
-        # 1. Fetch Primary Data
         df, ticker_used = fetch_data(primary_t, fallback_t, start_date, end_date)
         vix_df = fetch_vix(start_date, end_date)
-        
-        # 2. Automated Pair Selection (New Logic)
-        st.toast(f"Scanning {len(candidate_list)} candidates for best correlation...")
+        st.toast(f"Scanning candidates for pair correlation...")
         best_pair_ticker, df_pair, best_corr, real_corr_val = find_best_pair(df, candidate_list, start_date, end_date)
         
         if df is not None and len(df) > window_size:
-            # 3. Regimes
+            # 1. Regimes
             segments, time_indices = lift_data(df['LogReturn'], window_size, step_size)
             labels, centroids, anomaly_scores = wk_means_clustering(segments, k_clusters)
             res = pd.DataFrame(index=time_indices)
@@ -476,7 +469,7 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             main_df = main_df.dropna(subset=['Regime'])
             main_df['Regime'] = main_df['Regime'].astype(int)
 
-            # 4. Forecast
+            # 2. Forecast
             main_df = add_technical_indicators(main_df, vix_df)
             regime_dummies = pd.get_dummies(main_df['Regime'], prefix='Regime')
             main_df = pd.concat([main_df, regime_dummies], axis=1)
@@ -485,12 +478,12 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             feature_cols += [c for c in main_df.columns if c.startswith("Regime_")]
             test_dates, y_true, y_pred, mse, acc, model = run_ml_forecasting(main_df, feature_cols)
 
-            # 5. Sentiment (with Technical Fallback)
+            # 3. Sentiment
             news_items, news_score, news_source = get_live_news_sentiment(news_proxies)
             if news_source is None:
                 news_items, news_score, news_source = get_technical_sentiment(main_df.iloc[-1])
 
-            # 6. Pairs Logic
+            # 4. Pairs
             dist_series = None
             if df_pair is not None:
                 common_idx = df.index.intersection(df_pair.index)
@@ -506,14 +499,12 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
             c1.metric("Current Regime", f"Regime {last_regime}")
             c2.metric("Forecast Accuracy", f"{acc:.1%}")
             c3.metric(f"Sentiment ({news_source})", f"{news_score:.2f}", delta="Bullish" if news_score > 0.05 else "Bearish" if news_score < -0.05 else "Neutral")
-            
-            # Display Auto-Selected Pair Info
             pair_label = f"{best_pair_ticker}" if best_pair_ticker else "N/A"
             corr_label = f"(Corr: {real_corr_val:.2f})" if best_pair_ticker else ""
             c4.metric(f"Auto-Paired: {pair_label}", f"{dist_series.iloc[-1]:.4f}" if dist_series is not None else "N/A", delta=corr_label, delta_color="off")
             
             st.markdown("---")
-            tabs = st.tabs(["📈 REGIMES", "🔮 FORECAST", "⚖️ PAIRS TRADER", "📰 LIVE SENTIMENT", "⚠️ RISK", "💰 STRATEGY", "⚖️ BENCHMARK"])
+            tabs = st.tabs(["📈 REGIMES", "🔮 FORECAST", "⚖️ PAIRS TRADER", "📰 LIVE SENTIMENT", "⚠️ RISK", "💰 PRO STRATEGY", "⚖️ BENCHMARK"])
 
             with tabs[0]:
                 fig, ax = plt.subplots(figsize=(12, 5))
@@ -545,7 +536,6 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                 if dist_series is not None:
                     st.markdown(f"**Auto-Selected Pair: {ticker_used} vs {best_pair_ticker}**")
                     st.caption(f"Selected based on highest absolute correlation ({real_corr_val:.2f}) over the selected period.")
-                    
                     z_score = (dist_series - dist_series.mean()) / dist_series.std()
                     fig_p, ax_p = plt.subplots(figsize=(12, 5))
                     ax_p.plot(dist_series.index, z_score, color=SHARP_PALETTE[2], lw=1.5, label='Wasserstein Divergence (Z-Score)')
@@ -578,10 +568,29 @@ if st.button("RUN FULL ANALYSIS", type="primary", use_container_width=True):
                     st.pyplot(fig_ad)
 
             with tabs[5]:
-                backtest_df, safe_regime = run_backtest(main_df['Adj Close'], main_df['Regime'], main_df.index)
+                # Updated Pro Backtest Call
+                backtest_df, safe_regime, r_vols = run_pro_backtest(main_df['Adj Close'], main_df['Regime'], main_df.index, target_vol, txn_cost)
+                
+                # Metrics
+                total_ret = backtest_df['Strategy_Equity'].iloc[-1] - 1
+                bh_ret = backtest_df['BuyHold_Equity'].iloc[-1] - 1
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Strategy Return", f"{total_ret:.2%}", delta=f"{total_ret-bh_ret:.2%}")
+                c2.metric("Safe Regime Vol", f"{r_vols[safe_regime]:.1%}")
+                c3.metric("Target Vol", f"{target_vol:.1%}")
+                
                 fig_bt, ax_bt = plt.subplots(figsize=(12, 5))
-                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=SHARP_PALETTE[3], lw=2)
-                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color='white', alpha=0.3, ls='--')
+                ax_bt.plot(backtest_df.index, backtest_df['Strategy_Equity'], color=SHARP_PALETTE[3], lw=2, label="Vol-Targeted Strategy")
+                ax_bt.plot(backtest_df.index, backtest_df['BuyHold_Equity'], color='white', alpha=0.3, ls='--', label="Buy & Hold")
+                
+                # Plot Position Size on secondary axis
+                ax2 = ax_bt.twinx()
+                ax2.fill_between(backtest_df.index, backtest_df['Position'], color=SHARP_PALETTE[3], alpha=0.1)
+                ax2.set_ylabel("Leverage / Position Size", color=SHARP_PALETTE[3])
+                
+                ax_bt.legend(loc='upper left', frameon=False)
+                ax_bt.set_title(f"Dynamic Volatility Targeting (Target: {target_vol:.0%}, Cost: {txn_cost}bps)")
                 st.pyplot(fig_bt)
 
             with tabs[6]:
