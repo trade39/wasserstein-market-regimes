@@ -95,7 +95,7 @@ def wasserstein_barycenter_1d(segments):
     return np.median(segments, axis=0)
 
 def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
-    """Wasserstein K-Means Algorithm (PDF Ref: Algorithm 1)."""
+    """Wasserstein K-Means Algorithm."""
     n_segments, window_size = segments.shape
     rng = np.random.default_rng(42)
     initial_indices = rng.choice(n_segments, size=k, replace=False)
@@ -133,7 +133,7 @@ def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
     return labels, centroids, distances_to_centroid
 
 def moment_kmeans_clustering(log_returns, h1, h2, k):
-    [cite_start]"""Benchmark: Standard K-Means on statistical moments [cite: 309-320]."""
+    """Benchmark: Standard K-Means on statistical moments."""
     moments = []
     indices = []
     n = len(log_returns)
@@ -309,7 +309,7 @@ if st.button("Run Analysis", type="primary"):
                 col_left, col_right = st.columns(2)
                 
                 with col_left:
-                    st.markdown("**1. [cite_start]Mean-Variance Projection** [cite: 346-349]")
+                    st.markdown("**1. Mean-Variance Projection**")
                     st.caption("Visual validation: Do clusters separate by risk/return?")
                     
                     # Calculate stats per window for scatter plot
@@ -332,7 +332,7 @@ if st.button("Run Analysis", type="primary"):
                     st.pyplot(fig_mv)
 
                 with col_right:
-                    st.markdown("**2. [cite_start]Skewness & Shape** [cite: 756-758]")
+                    st.markdown("**2. Skewness & Shape**")
                     st.caption("Do regimes exhibit different tail risks (skewness)?")
                     
                     fig_skew, ax_skew = plt.subplots(figsize=(6, 5))
@@ -355,7 +355,7 @@ if st.button("Run Analysis", type="primary"):
                 c1, c2 = st.columns(2)
                 
                 with c1:
-                    [cite_start]st.markdown("**Transition Matrix** [cite: 325-331]")
+                    st.markdown("**Transition Matrix**")
                     st.caption("Probability of moving from Regime X to Regime Y.")
                     trans_mat = calculate_transition_matrix(labels)
                     
@@ -368,7 +368,7 @@ if st.button("Run Analysis", type="primary"):
                     st.pyplot(fig_hm)
                     
                 with c2:
-                    [cite_start]st.markdown("**Anomaly Detection** [cite: 53-54]")
+                    st.markdown("**Anomaly Detection**")
                     st.caption("Wasserstein Distance to Centroid over time. Spikes indicate regime breakdown.")
                     
                     fig_ad, ax_ad = plt.subplots(figsize=(6, 4))
@@ -409,7 +409,7 @@ if st.button("Run Analysis", type="primary"):
 
             # TAB 5: Benchmark
             with tab5:
-                [cite_start]st.markdown("### Benchmark: Moment K-Means [cite: 309-320]")
+                st.markdown("### Benchmark: Moment K-Means")
                 st.caption("Comparison with standard K-Means clustering on [Mean, Variance, Skew, Kurtosis].")
                 
                 # Run Benchmark
