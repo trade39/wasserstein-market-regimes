@@ -6,3 +6,4 @@ matplotlib
 seaborn
 scipy
 scikit-learn
+ta
