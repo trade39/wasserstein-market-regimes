@@ -7,3 +7,5 @@ seaborn
 scipy
 scikit-learn
 ta
+nltk
+textblob
