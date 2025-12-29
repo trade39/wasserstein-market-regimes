@@ -181,7 +181,8 @@ def add_technical_indicators(df):
     
     # 3. Volatility: Bollinger Bands Width
     bb = BollingerBands(close=df["Adj Close"], window=20, window_dev=2)
-    df["BB_Width"] = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mband()
+    # FIX: Use .bollinger_mavg() instead of .bollinger_mband()
+    df["BB_Width"] = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
     
     # 4. Simple Moving Averages
     df["SMA_20"] = SMAIndicator(close=df["Adj Close"], window=20).sma_indicator()
