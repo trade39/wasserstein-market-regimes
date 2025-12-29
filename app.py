@@ -11,72 +11,94 @@ st.set_page_config(page_title="Wasserstein Market Regimes", layout="wide")
 # Apply Dark Background for Matplotlib globally
 plt.style.use('dark_background')
 
-# Custom CSS for Streamlit to ensure tables and text look good
+# Custom CSS for Streamlit
 st.markdown("""
 <style>
     .reportview-container { margin-top: -2em; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display:none;}
-    /* Force dark background for plots if transparent */
     div[data-testid="stImage"] {background-color: transparent;}
 </style>
 """, unsafe_allow_html=True)
 
 # --- Helper Functions ---
 
-def get_ticker(asset_name):
-    """Map user friendly names to Yahoo Finance Tickers."""
+def get_ticker_and_fallback(asset_name):
+    """
+    Returns a primary ticker and a safer fallback (ETF/Index) 
+    in case the primary (usually Futures) fails.
+    """
     mapping = {
-        "Gold": "GC=F",
-        "EURUSD": "EURUSD=X",
-        "ES (S&P 500 E-mini)": "ES=F",
-        "NQ (Nasdaq 100 E-mini)": "NQ=F",
-        "BTC (Bitcoin)": "BTC-USD"
+        "Gold": ("GC=F", "GLD"),                 # Future -> ETF
+        "EURUSD": ("EURUSD=X", "FXE"),           # Forex -> ETF
+        "ES (S&P 500 E-mini)": ("ES=F", "SPY"),  # Future -> ETF
+        "NQ (Nasdaq 100 E-mini)": ("NQ=F", "QQQ"), # Future -> ETF
+        "BTC (Bitcoin)": ("BTC-USD", "BITO")     # Crypto -> ETF
     }
-    return mapping.get(asset_name, "SPY")
+    return mapping.get(asset_name, ("SPY", "SPY"))
 
 @st.cache_data
-def fetch_data(ticker, start_date, end_date):
-    """Fetch closing prices and calculate log returns with robust column handling."""
-    try:
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        
-        if data.empty:
-            st.error(f"No data returned for {ticker}. The ticker might be delisted or the date range is invalid.")
-            return None
-        
-        # Handle MultiIndex columns
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+def fetch_data(primary_ticker, fallback_ticker, start_date, end_date):
+    """
+    Robust data fetching. Tries primary ticker first; if empty, uses fallback.
+    """
+    def download_safe(t):
+        try:
+            # force auto_adjust=False to ensure we get 'Adj Close' or 'Close' columns consistently
+            d = yf.download(t, start=start_date, end=end_date, progress=False, auto_adjust=False)
+            return d
+        except Exception:
+            return pd.DataFrame()
 
-        # Determine price column
-        if 'Adj Close' in data.columns:
-            price_col = 'Adj Close'
-        elif 'Close' in data.columns:
-            price_col = 'Close'
-        else:
-            st.error(f"Could not find 'Adj Close' or 'Close' in data columns: {data.columns}")
-            return None
-            
-        data = data.copy()
-        
-        # Standardize column name for plotting
-        if price_col != 'Adj Close':
-            data['Adj Close'] = data[price_col]
+    # 1. Try Primary
+    data = download_safe(primary_ticker)
+    
+    # 2. Check if valid. If not, try Fallback.
+    used_ticker = primary_ticker
+    if data.empty:
+        st.warning(f"Could not fetch data for {primary_ticker} (likely a Yahoo Finance futures issue). Switching to fallback: {fallback_ticker}...")
+        data = download_safe(fallback_ticker)
+        used_ticker = fallback_ticker
 
-        # Log Returns
-        data['LogReturn'] = np.log(data[price_col] / data[price_col].shift(1))
-        
-        data = data.dropna()
-        return data
+    if data.empty:
+        st.error(f"No data returned for {primary_ticker} or {fallback_ticker}. Please check the date range.")
+        return None, None
 
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return None
+    # 3. Handle MultiIndex columns (New yfinance versions)
+    if isinstance(data.columns, pd.MultiIndex):
+        try:
+            # Try to flatten if the level 1 is the ticker name
+            if used_ticker in data.columns.get_level_values(1):
+                 data = data.xs(used_ticker, axis=1, level=1)
+            else:
+                 # Just take the top level if structure is unexpected
+                 data.columns = data.columns.get_level_values(0)
+        except Exception:
+             # Last resort flatten
+             data.columns = data.columns.get_level_values(0)
+
+    # 4. Standardize Price Column
+    if 'Adj Close' in data.columns:
+        price_col = 'Adj Close'
+    elif 'Close' in data.columns:
+        price_col = 'Close'
+    else:
+        st.error(f"Missing price columns. Available: {data.columns}")
+        return None, None
+
+    data = data.copy()
+    if price_col != 'Adj Close':
+        data['Adj Close'] = data[price_col]
+
+    # 5. Log Returns
+    data['LogReturn'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
+    data = data.dropna()
+    
+    return data, used_ticker
 
 def lift_data(log_returns, h1, h2):
-    """Lifts the stream of returns into a stream of segments (empirical measures)."""
+    """Lifts the stream of returns into a stream of segments."""
     n = len(log_returns)
     segments = []
     indices = []
@@ -89,11 +111,9 @@ def lift_data(log_returns, h1, h2):
     return np.array(segments), indices
 
 def wasserstein_barycenter_1d(segments):
-    """Calculates the 1-Wasserstein Barycenter (Component-wise Median)."""
     return np.median(segments, axis=0)
 
 def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
-    """The Wasserstein K-Means Algorithm."""
     n_segments, window_size = segments.shape
     rng = np.random.default_rng(42)
     initial_indices = rng.choice(n_segments, size=k, replace=False)
@@ -127,38 +147,30 @@ def wk_means_clustering(segments, k, max_iter=100, tol=1e-4):
     return labels, centroids
 
 def generate_context_summary(stats_df):
-    """Generates a text summary interpreting the regimes."""
     summary = []
-    
-    # Identify Volatility Extremes
     max_vol_regime = stats_df['Volatility (Ann.)'].idxmax()
     min_vol_regime = stats_df['Volatility (Ann.)'].idxmin()
-    
-    # Identify Return Extremes
-    max_ret_regime = stats_df['Mean Return (Ann.)'].idxmax()
-    min_ret_regime = stats_df['Mean Return (Ann.)'].idxmin()
 
-    summary.append(f"**Regime {max_vol_regime} (High Volatility):** This regime exhibits the highest annualized volatility ({stats_df.loc[max_vol_regime, 'Volatility (Ann.)']:.2%}). "
-                   f"It often corresponds to 'Crisis' or 'Correction' periods (resembling Bear markets).")
+    summary.append(f"**Regime {max_vol_regime} (High Volatility):** Exhibits highest annualized volatility ({stats_df.loc[max_vol_regime, 'Volatility (Ann.)']:.2%}). "
+                   f"Often resembles crisis or correction behavior.")
     
     if max_vol_regime != min_vol_regime:
-        summary.append(f"**Regime {min_vol_regime} (Low Volatility):** This regime is more stable with lower volatility ({stats_df.loc[min_vol_regime, 'Volatility (Ann.)']:.2%}). "
-                       f"It typically represents 'Calm' or 'Bullish' trending periods.")
-        
+        summary.append(f"**Regime {min_vol_regime} (Low Volatility):** More stable with lower volatility ({stats_df.loc[min_vol_regime, 'Volatility (Ann.)']:.2%}). "
+                       f"Typically represents calm or trending periods.")
     return summary
 
 # --- Main App Interface ---
 
 st.title("Clustering Market Regimes using Wasserstein Distance")
 st.markdown("""
-This app applies **Wasserstein k-means** to cluster market behavior. 
-It groups time periods not just by price, but by the **shape of the return distribution** (volatility, tails, skew).
+[cite_start]This app applies **Wasserstein k-means** to cluster market behavior[cite: 7]. 
+[cite_start]It groups time periods by the **geometry of their return distribution**, capturing shifts in volatility and tail risk [cite: 30-32].
 """)
 
 # Sidebar
 st.sidebar.header("Configuration")
 asset_select = st.sidebar.selectbox("Select Asset", ["Gold", "EURUSD", "ES (S&P 500 E-mini)", "NQ (Nasdaq 100 E-mini)", "BTC (Bitcoin)"])
-ticker = get_ticker(asset_select)
+primary_t, fallback_t = get_ticker_and_fallback(asset_select)
 
 col1, col2 = st.sidebar.columns(2)
 start_date = col1.date_input("Start Date", pd.to_datetime("2020-01-01"))
@@ -171,14 +183,17 @@ step_size = st.sidebar.slider("Step Size (h2)", 1, 20, 5, help="Days to slide fo
 
 # Execution
 if st.button("Run Clustering"):
-    with st.spinner("Fetching data and calculating regimes..."):
-        df = fetch_data(ticker, start_date, end_date)
+    with st.spinner(f"Fetching data for {asset_select}..."):
+        df, actual_ticker = fetch_data(primary_t, fallback_t, start_date, end_date)
         
         if df is not None and len(df) > window_size:
+            if actual_ticker != primary_t:
+                st.caption(f"Note: Using data from **{actual_ticker}** as proxy.")
+                
             segments_sorted, time_indices = lift_data(df['LogReturn'], window_size, step_size)
             
             if len(segments_sorted) < k_clusters:
-                st.error("Not enough data points for the chosen parameters.")
+                st.error("Not enough data points. Try increasing the date range or decreasing the window size.")
             else:
                 labels, centroids = wk_means_clustering(segments_sorted, k_clusters)
                 
@@ -189,7 +204,7 @@ if st.button("Run Clustering"):
                 merged_df = merged_df.dropna(subset=['Cluster'])
                 merged_df['Cluster'] = merged_df['Cluster'].astype(int)
 
-                # --- Calculate Stats for Context ---
+                # --- Statistics ---
                 stats_data = []
                 for i in range(k_clusters):
                     cluster_indices = np.where(labels == i)[0]
@@ -205,21 +220,17 @@ if st.button("Run Clustering"):
                         })
                 stats_df_numeric = pd.DataFrame(stats_data).set_index("Regime")
 
-                # --- Visualizations (Dark Mode) ---
+                # --- Visualizations ---
                 
                 # 1. Price Path
-                st.subheader(f"{asset_select} Price Path by Regime")
-                
-                # Setup Dark Figure
+                st.subheader(f"{asset_select} ({actual_ticker}) Price Path by Regime")
                 fig, ax = plt.subplots(figsize=(12, 6))
-                fig.patch.set_facecolor('#0E1117') # Streamlit Dark BG color approximation
+                fig.patch.set_facecolor('#0E1117') 
                 ax.set_facecolor('#0E1117')
                 
-                # Plot Grey line
                 ax.plot(merged_df.index, merged_df['Adj Close'], color='#444444', alpha=0.5, label='Price', linewidth=1)
                 
-                # Plot Regimes
-                colors = plt.cm.plasma(np.linspace(0, 1, k_clusters)) # Plasma looks good on dark
+                colors = plt.cm.plasma(np.linspace(0, 1, k_clusters))
                 
                 for cluster_id in range(k_clusters):
                     cluster_data = merged_df[merged_df['Cluster'] == cluster_id]
@@ -231,11 +242,9 @@ if st.button("Run Clustering"):
                 ax.tick_params(colors='white')
                 ax.grid(True, color='#333333', linestyle='--', alpha=0.5)
                 
-                # Legend with dark text
                 leg = ax.legend(facecolor='#0E1117', edgecolor='white')
                 for text in leg.get_texts():
                     text.set_color("white")
-                
                 st.pyplot(fig)
 
                 # 2. Context Summary
@@ -263,32 +272,18 @@ if st.button("Run Clustering"):
                     leg2 = ax2.legend(facecolor='#0E1117', edgecolor='white')
                     for text in leg2.get_texts():
                         text.set_color("white")
-                        
                     st.pyplot(fig2)
 
-                # 4. Stats Table (Formatted)
+                # 4. Stats Table
                 with col_stats:
                     st.markdown("##### Detailed Statistics")
-                    # Format for display
                     display_stats = stats_df_numeric.copy()
                     display_stats['Mean Return (Ann.)'] = display_stats['Mean Return (Ann.)'].apply(lambda x: f"{x:.2%}")
                     display_stats['Volatility (Ann.)'] = display_stats['Volatility (Ann.)'].apply(lambda x: f"{x:.2%}")
                     st.dataframe(display_stats)
 
         else:
-            st.warning("No data found or data length is shorter than window size.")
+            st.warning("No data found. Try expanding the date range.")
 
 else:
     st.info("Select parameters and click 'Run Clustering' to start.")
-
-# --- Explainer ---
-st.markdown("---")
-st.markdown("### Methodology")
-st.markdown("""
-This tool uses the **Wasserstein Distance** (Earth Mover's Distance) to compare windows of returns. 
-[cite_start]Unlike standard correlation or mean-variance clustering, this method compares the **entire geometry** of the return distribution [cite: 7, 30-32].
-
-* **Regimes:** Clusters are formed by grouping time windows with similar return distributions.
-* [cite_start]**Barycenters:** The curves plotted above are the "average" distribution for that regime [cite: 32, 241-243].
-* [cite_start]**Context:** High volatility regimes often align with market crashes (fat tails), while low volatility regimes align with steady growth [cite: 377-382].
-""")
