@@ -32,15 +32,44 @@ def get_ticker(asset_name):
 
 @st.cache_data
 def fetch_data(ticker, start_date, end_date):
-    """Fetch closing prices and calculate log returns."""
+    """Fetch closing prices and calculate log returns with robust column handling."""
     try:
+        # Download data
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        
         if data.empty:
+            st.error(f"No data returned for {ticker}. The ticker might be delisted or the date range is invalid.")
             return None
-        # Calculate Log Returns: r_i = log(P_t) - log(P_{t-1})
-        data['LogReturn'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
+        
+        # 1. Handle MultiIndex columns (common in new yfinance versions)
+        # If columns look like ('Adj Close', 'SPY'), flatten them to just 'Adj Close'
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        # 2. Determine which column to use for price
+        # Prefer 'Adj Close', fallback to 'Close' if 'Adj Close' is missing
+        if 'Adj Close' in data.columns:
+            price_col = 'Adj Close'
+        elif 'Close' in data.columns:
+            price_col = 'Close'
+        else:
+            st.error(f"Could not find 'Adj Close' or 'Close' in data columns: {data.columns}")
+            return None
+            
+        # 3. Calculate Log Returns
+        # Use .copy() to avoid SettingWithCopy warnings
+        data = data.copy()
+        
+        # Create a standardized 'Adj Close' column for plotting if it doesn't exist
+        if price_col != 'Adj Close':
+            data['Adj Close'] = data[price_col]
+
+        # Log Returns: r_i = log(P_t) - log(P_{t-1})
+        data['LogReturn'] = np.log(data[price_col] / data[price_col].shift(1))
+        
         data = data.dropna()
         return data
+
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         return None
@@ -185,8 +214,6 @@ if st.button("Run Clustering"):
                 st.subheader(f"{asset_select} Price Path by Regime")
                 
                 # Create segments for coloring
-                # We can't easily color a single line with multiple colors in standard matplotlib 
-                # without iterating segments. Using scatter for simplicity or broken line segments.
                 fig, ax = plt.subplots(figsize=(12, 6))
                 
                 # Plot underlying grey line for continuity
@@ -258,10 +285,10 @@ else:
 st.markdown("---")
 st.markdown("### How it works (Based on PDF)")
 st.markdown("""
-1. **Lift**: The price series is converted into log-returns and sliced into overlapping windows (length $h_1$).
-2. **Empirical Measure**: Each window is treated as a probability distribution.
-3. **Wasserstein Distance**: The algorithm calculates the distance between these distributions. For 1D data, this is the $L_1$ distance between sorted returns.
+1. [cite_start]**Lift**: The price series is converted into log-returns and sliced into overlapping windows (length $h_1$) [cite: 109-113].
+2. [cite_start]**Empirical Measure**: Each window is treated as a probability distribution [cite: 115-125].
+3. **Wasserstein Distance**: The algorithm calculates the distance between these distributions. [cite_start]For 1D data, this is the $L_1$ distance between sorted returns [cite: 271-273].
 4. **WK-Means**: 
-    - **Assignment**: Windows are assigned to the closest regime centroid.
-    - **Update**: Centroids are updated by calculating the **Wasserstein Barycenter** (which, for $p=1$, is the component-wise median of sorted distributions).
+    - [cite_start]**Assignment**: Windows are assigned to the closest regime centroid[cite: 307].
+    - [cite_start]**Update**: Centroids are updated by calculating the **Wasserstein Barycenter** (which, for $p=1$, is the component-wise median of sorted distributions) [cite: 280-284].
 """)
